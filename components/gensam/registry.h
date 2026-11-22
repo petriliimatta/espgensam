@@ -13,7 +13,7 @@
 /// store and which entity to publish.
 ///
 /// 1. Two-Layer Identity:
-///    Monitors are keyed by their volatile RACE bus address (0x02..0x7F), which is reassigned
+///    Monitors are keyed by their volatile RACE bus address (0x02..0xEF), which is reassigned
 ///    on every discovery cycle and reset whenever monitors pass through <0.5W standby.  The
 ///    stable identity is the factory serial number or the decimal hardware ID, which is what
 ///    a GenSAMMonitorBinding matches against.  Lookups by user-facing name, serial, or ID
@@ -61,17 +61,17 @@ class MonitorRegistry {
   ///
   /// A newly created entry has its address field populated; callers typically follow with
   /// mark_seen() and bind_if_matched().
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @return Reference to the existing or newly created monitor descriptor.
   GenSAMMonitor &get_or_create(uint8_t address);
 
   /// @brief Look up a monitor by logical bus address.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @return Pointer to the monitor, or nullptr if not registered.
   GenSAMMonitor *find(uint8_t address);
 
   /// @brief Look up a monitor by logical bus address (read-only).
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @return Const pointer to the monitor, or nullptr if not registered.
   const GenSAMMonitor *find(uint8_t address) const;
 

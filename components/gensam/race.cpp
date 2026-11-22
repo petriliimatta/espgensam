@@ -252,6 +252,13 @@ void GenSAMHub::complete_rid_assignment_(uint8_t address) {
 
   delayMicroseconds(TURNAROUND_US);
 
+  if (next_assign_addr_ > MONITOR_MAX_ADDR) {
+    ESP_LOGW(TAG, "RACE address space exhausted at 0x%02X; no more monitor RIDs are available",
+             MONITOR_MAX_ADDR);
+    this->finish_race_discovery_(millis());
+    return;
+  }
+
   // Send next RACE ping
   this->send_frame(make_discovery_ping());
   race_state_ = RaceState::RACE_PING_SENT;
@@ -539,6 +546,10 @@ void GenSAMHub::race_step_ping_(uint32_t now) {
     return;
   }
 
+  this->finish_race_discovery_(now);
+}
+
+void GenSAMHub::finish_race_discovery_(uint32_t now) {
   ESP_LOGI(TAG, "RACE discovery complete. Total monitors found: %u", (unsigned)registry_.size());
   registry_.assign_discovery_slots();
 

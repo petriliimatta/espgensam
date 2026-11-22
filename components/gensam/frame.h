@@ -38,7 +38,8 @@
 ///    - Discards leading noise characters (9th bit = 0 while IDLE).
 ///    - Immediately resynchronizes on any valid 9th-bit address byte.
 ///    - Accommodates 1-bit RS-485 transceiver turnaround lag (where HOST_ADDRESS
-///      0x01' is sampled as 0xC0' by fast-replying monitors) under strict 16-bit CRC validation.
+///      0x01' is sampled as 0xC0') by retrying the CRC against HOST_ADDRESS. This preserves a
+///      genuine frame addressed to monitor RID 0xC0.
 ///    - Accumulates body bytes up to MAX_FRAME_LENGTH (256) safety bound.
 ///    - Unescapes body and CRC on delimiter (0x7E) and verifies CRC checksum.
 /// ===================================================================================
@@ -77,16 +78,23 @@ void unescape_bytes(const Uart9BitChar *in, size_t len, std::vector<uint8_t> &ou
 ///
 /// Valid network addresses comprise:
 /// - Host controller: 0x01 (HOST_ADDRESS)
-/// - Unicast monitors: 0x02 to 0x7E (MONITOR_START_ADDR up to 0x7E)
+/// - Unicast monitors: 0x02 to 0xEF (MONITOR_START_ADDR up to MONITOR_MAX_ADDR)
 /// - Multicast group: 0xF0 (MULTICAST_ADDRESS)
 /// - Broadcast group: 0xFF (BROADCAST_ADDRESS)
 /// @param addr The 8-bit address candidate to validate.
 /// @return True if @p addr is a valid GLM network address.
 inline bool is_valid_glm_address(uint8_t addr) {
   return addr == HOST_ADDRESS ||
-         (addr >= MONITOR_START_ADDR && addr <= 0x7E) ||
+         (addr >= MONITOR_START_ADDR && addr <= MONITOR_MAX_ADDR) ||
          addr == MULTICAST_ADDRESS ||
          addr == BROADCAST_ADDRESS;
+}
+
+/// @brief Check whether an address is a unicast monitor RID.
+/// @param addr The 8-bit address candidate to validate.
+/// @return True when @p addr is in the range 0x02..0xEF.
+inline bool is_monitor_address(uint8_t addr) {
+  return addr >= MONITOR_START_ADDR && addr <= MONITOR_MAX_ADDR;
 }
 
 /// @brief A single decoded 9-bit GLM bus frame.
@@ -162,8 +170,8 @@ class FrameParser {
 
   /// @brief Total count of address bytes rewritten from 0xC0 to HOST_ADDRESS.
   ///
-  /// Quantifies how often RS-485 turnaround costs a reply's start bit; see the workaround in
-  /// feed(). This is the metric to compare across a transceiver change.
+  /// Quantifies how often RS-485 turnaround costs a reply's start bit; see the CRC fallback in
+  /// process_candidate_(). This is the metric to compare across a transceiver change.
   uint32_t c0_alias_count() const { return c0_alias_count_; }
 
   /// @brief Reset internal state machine, discarding any partial frame and queued frames.

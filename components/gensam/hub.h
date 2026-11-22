@@ -550,7 +550,7 @@ class GenSAMHub : public Component {
   void set_phase_correction_bypass_switch(switch_::Switch *sw) { phase_correction_bypass_switch_ = sw; }
 
   /// @brief Set mute state for an individual monitor by logical RS-485 bus address.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param mute True to mute audio and set front LED red, false to unmute.
   void set_monitor_mute(uint8_t address, bool mute);
 
@@ -560,7 +560,7 @@ class GenSAMHub : public Component {
   void set_monitor_mute_by_serial(const std::string &serial_or_id, bool mute);
 
   /// @brief Set bass management crossover frequency for an individual monitor by logical address.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param freq_hz Crossover filter frequency in Hz (50..120 Hz, step 5 Hz), or CROSSOVER_FULL_BAND.
   void set_monitor_crossover(uint8_t address, uint16_t freq_hz);
 
@@ -579,7 +579,7 @@ class GenSAMHub : public Component {
   /// The trim AutoCal derives to match one speaker's output to the rest of a group. Clamped
   /// to [MIN_LEVEL_DB, MAX_LEVEL_DB] here rather than only in the entity, because a YAML
   /// lambda can reach this directly and an unclamped sentinel encodes as digital silence.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param db Attenuation in decibels; 0.0 is unity.
   void set_monitor_level(uint8_t address, float db);
 
@@ -589,7 +589,7 @@ class GenSAMHub : public Component {
   void set_monitor_level_by_serial(const std::string &serial_or_id, float db);
 
   /// @brief Set the time-of-flight delay for an individual monitor by logical address.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param samples Delay in samples at DSP_DELAY_RATE_HZ, clamped to MAX_DELAY_SAMPLES.
   void set_monitor_delay(uint8_t address, uint32_t samples);
 
@@ -603,7 +603,7 @@ class GenSAMHub : public Component {
   /// Transmits immediately, wrapped in a transient silence, and marks the system as deviating
   /// from the active group: nothing about the group itself changes, so the next group push
   /// restores its routing.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param source SOURCE_ANALOG (0x01) or SOURCE_DIGITAL_AES3 (0x02).
   /// @param channel AES3 sub-channel; ignored when @p source is analog.
   void set_monitor_input(uint8_t address, uint8_t source, uint8_t channel);
@@ -637,7 +637,7 @@ class GenSAMHub : public Component {
   void identify_monitor_by_serial(const std::string &serial_or_id, uint32_t duration_ms = 5000);
 
   /// @brief Pulse a monitor's front LED by its current logical address.
-  /// @param address Logical bus address (0x02..0x7F).
+  /// @param address Logical bus address (0x02..0xEF).
   /// @param duration_ms Pulse duration in milliseconds (default 5000 ms).
   void identify_monitor_by_address(uint8_t address, uint32_t duration_ms = 5000);
 
@@ -697,12 +697,12 @@ class GenSAMHub : public Component {
   const std::map<uint8_t, GenSAMMonitor> &get_monitors() const { return registry_.monitors(); }
 
   /// @brief Look up a discovered monitor by its logical RS-485 address.
-  /// @param address Target address (0x02..0x7F).
+  /// @param address Target address (0x02..0xEF).
   /// @return Pointer to GenSAMMonitor descriptor, or nullptr if not registered.
   GenSAMMonitor *get_monitor(uint8_t address) { return registry_.find(address); }
 
   /// @brief Look up a discovered monitor by its logical RS-485 address (read-only).
-  /// @param address Target address (0x02..0x7F).
+  /// @param address Target address (0x02..0xEF).
   /// @return Const pointer to GenSAMMonitor descriptor, or nullptr if not registered.
   const GenSAMMonitor *get_monitor(uint8_t address) const { return registry_.find(address); }
 
@@ -791,6 +791,9 @@ class GenSAMHub : public Component {
 
   /// @brief RACE_PING_SENT: on silence, conclude discovery and move to device interrogation.
   void race_step_ping_(uint32_t now);
+
+  /// @brief Begin device interrogation after RACE discovery completes or exhausts all RIDs.
+  void finish_race_discovery_(uint32_t now);
 
   /// @brief RACE_SET_RID_SENT: retry the address assignment, or accept it unacknowledged.
   void race_step_set_rid_(uint32_t now);

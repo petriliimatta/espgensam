@@ -154,8 +154,10 @@ void FrameParser::feed(const Uart9BitChar &c) {
     //
     // Fast-replying monitor responses destined for HOST_ADDRESS (0x01) can experience 1-bit
     // transceiver turnaround lag on passive-pull RS-485 modules, decoding as 0xC0'.
-    // We map 0xC0' to HOST_ADDRESS. Full integrity is strictly protected by the 16-bit CRC check
-    // in process_candidate_(); any corrupted noise frame will fail CRC and be dropped.
+    // Keep 0xC0 intact here: it is also a valid monitor RID. process_candidate_() first checks
+    // the CRC against 0xC0, then retries against HOST_ADDRESS only if that check fails. Thus a
+    // genuine frame to RID 0xC0 is preserved, while a host-address alias is accepted only when
+    // its original CRC validates.
     //
     // The lost start edge happens at the *bus* turnaround -- the previous master's driver
     // releasing, the line coasting to its idle bias, the monitor's driver asserting. It is
@@ -184,11 +186,6 @@ void FrameParser::feed(const Uart9BitChar &c) {
     // Removing it would require never yielding. Track c0_alias_count() to compare hardware, and
     // read it separately for master and yielded phases -- a single pooled figure mostly measures
     // how much of the sample was spent yielding.
-    if (addr == 0xC0) {
-      addr = HOST_ADDRESS;
-      c0_alias_count_++;
-    }
-
     // Only accept bytes that represent valid GLM destination addresses.
     // Transceiver loopback echo with distorted rise times often samples false 9th bits (e.g. BF', DF', AD', 7F').
     if (!is_valid_glm_address(addr)) {
@@ -277,6 +274,14 @@ void FrameParser::process_candidate_() {
   }
 
   bool crc_ok = verify_crc(check_ptr, check_len, wire_crc);
+  if (!crc_ok && address == 0xC0) {
+    check_ptr[0] = HOST_ADDRESS;
+    if (verify_crc(check_ptr, check_len, wire_crc)) {
+      address = HOST_ADDRESS;
+      crc_ok = true;
+      c0_alias_count_++;
+    }
+  }
   if (crc_ok) {
     valid_count_++;
   } else {

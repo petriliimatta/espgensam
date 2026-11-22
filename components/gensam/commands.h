@@ -44,7 +44,7 @@ Frame make_discovery_ping();
 
 /// @brief Build the RACE address assignment multicast (0xF0 0x02).
 /// @param racing_bytes The 3-byte hardware serial reported by the winning monitor.
-/// @param assign_addr Logical bus address to assign (0x02..0x7F).
+/// @param assign_addr Logical bus address to assign (0x02..0xEF).
 /// @return Multicast CMD_SET_RID frame carrying [serial(3), address].
 Frame make_set_rid(const std::vector<uint8_t> &racing_bytes, uint8_t assign_addr);
 

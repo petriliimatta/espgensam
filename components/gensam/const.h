@@ -32,6 +32,7 @@ static constexpr size_t MAX_FRAME_LENGTH = 256;   ///< Safety bound for frame bu
 // --- Addressing -----------------------------------------------------------
 static constexpr uint8_t HOST_ADDRESS = 0x01;
 static constexpr uint8_t MONITOR_START_ADDR = 0x02;
+static constexpr uint8_t MONITOR_MAX_ADDR = 0xEF;         ///< Last unicast monitor RID before multicast.
 static constexpr uint8_t MULTICAST_ADDRESS = 0xF0;  ///< Native RS485 multicast address (0xF0)
 static constexpr uint8_t BROADCAST_ADDRESS = 0xFF;  ///< Native RS485 broadcast address (0xFF)
 

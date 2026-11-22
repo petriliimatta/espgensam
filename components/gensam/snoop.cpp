@@ -26,7 +26,7 @@ void GenSAMHub::snoop_frame_(const Frame &frame) {
 }
 
 void GenSAMHub::snoop_addressing_(const Frame &frame) {
-  if (frame.address >= MONITOR_START_ADDR && frame.address < 0x80) {
+  if (is_monitor_address(frame.address)) {
     // Remember the outstanding query so snoop_host_reply_ can attribute the answer.
     last_queried_addr_ = frame.address;
     last_queried_cmd_ = frame.command;
@@ -36,6 +36,9 @@ void GenSAMHub::snoop_addressing_(const Frame &frame) {
 
   if (frame.address == MULTICAST_ADDRESS && frame.command == CMD_SET_RID && frame.payload.size() == 4) {
     uint8_t addr = frame.payload[3];
+    if (!is_monitor_address(addr)) {
+      return;
+    }
     GenSAMMonitor &mon = registry_.get_or_create(addr);
     mon.unique_id = (static_cast<uint32_t>(frame.payload[0]) << 16) |
                     (static_cast<uint32_t>(frame.payload[1]) << 8) |
@@ -97,7 +100,7 @@ void GenSAMHub::snoop_system_leds_(const Frame &frame) {
     return;
   }
   if (frame.address != MULTICAST_ADDRESS && frame.address != BROADCAST_ADDRESS &&
-      (frame.address < MONITOR_START_ADDR || frame.address >= 0x80)) {
+      !is_monitor_address(frame.address)) {
     return;
   }
 
@@ -159,7 +162,7 @@ void GenSAMHub::snoop_mute_(const Frame &frame) {
     registry_.set_mute(*known, is_muted);
     ESP_LOGD(TAG, "[Sniffed] Monitor 0x%02X mute updated to %s (raw 0x%02X)",
              frame.address, YESNO(is_muted), frame.payload[0]);
-  } else if (frame.address >= MONITOR_START_ADDR && frame.address < 0x80) {
+  } else if (is_monitor_address(frame.address)) {
     GenSAMMonitor &mon = registry_.get_or_create(frame.address);
     // Record mute before marking seen, so the system mute re-evaluation triggered by the
     // offline->online transition already accounts for this monitor's new state.
@@ -199,7 +202,7 @@ void GenSAMHub::snoop_crossover_(const Frame &frame) {
     registry_.set_crossover(*known, freq);
     ESP_LOGI(TAG, "[Sniffed] Monitor 0x%02X bass management crossover set to %s",
              frame.address, buf);
-  } else if (frame.address >= MONITOR_START_ADDR && frame.address < 0x80) {
+  } else if (is_monitor_address(frame.address)) {
     GenSAMMonitor &mon = registry_.get_or_create(frame.address);
     this->mark_monitor_seen_(mon);
     registry_.bind_if_matched(mon);
@@ -272,7 +275,7 @@ GenSAMMonitor *GenSAMHub::resolve_snooped_monitor_(uint8_t address) {
   if (mon != nullptr) {
     return mon;
   }
-  if (address < MONITOR_START_ADDR || address >= 0x80) {
+  if (!is_monitor_address(address)) {
     return nullptr;
   }
   mon = &registry_.get_or_create(address);

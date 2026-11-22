@@ -55,6 +55,8 @@
 using esphome::gensam::BiquadCoeffs;
 using esphome::gensam::design_biquad;
 using esphome::gensam::Frame;
+using esphome::gensam::FrameParser;
+using esphome::gensam::is_monitor_address;
 using esphome::gensam::make_peq_band;
 using esphome::gensam::make_use_stored_settings;
 using esphome::gensam::PeqType;
@@ -192,6 +194,35 @@ void test_escaped_coefficient_roundtrip() {
   }
 }
 
+void test_monitor_rid_range_and_c0_alias() {
+  for (uint8_t addr : {uint8_t{0x02}, uint8_t{0x7E}, uint8_t{0x7F}, uint8_t{0x80},
+                       uint8_t{0xC0}, uint8_t{0xEF}}) {
+    const Frame sent(addr, esphome::gensam::CMD_ACK, {0x09});
+    const auto wire = sent.to_9bit();
+    FrameParser parser;
+    parser.feed(wire.data(), wire.size());
+    Frame received;
+    check(is_monitor_address(addr) && parser.pop_frame(received) && received.crc_valid &&
+              received.address == addr,
+          "monitor RID in 0x02..0xEF survives frame parsing");
+  }
+
+  check(!is_monitor_address(0x01) && !is_monitor_address(0xF0) &&
+            !is_monitor_address(0xF1) && !is_monitor_address(0xFF),
+        "host, multicast, reserved and broadcast values are not monitor RIDs");
+
+  Frame host_reply(esphome::gensam::HOST_ADDRESS, esphome::gensam::CMD_ACK, {0x09});
+  auto aliased_wire = host_reply.to_9bit();
+  aliased_wire[0].data = 0xC0;
+  FrameParser alias_parser;
+  alias_parser.feed(aliased_wire.data(), aliased_wire.size());
+  Frame received_alias;
+  check(alias_parser.pop_frame(received_alias) && received_alias.crc_valid &&
+            received_alias.address == esphome::gensam::HOST_ADDRESS &&
+            alias_parser.c0_alias_count() == 1,
+        "0xC0 is rewritten to host only when the host-address CRC validates");
+}
+
 void test_index_out_of_range_builds_nothing() {
   // 20 slots exist; 0x14 is the first that does not. Returning an empty frame keeps a bad
   // index from being silently truncated into a valid one and retuning the wrong band.
@@ -207,6 +238,7 @@ int main() {
   test_captured_prepare_config();
   test_designed_band_is_little_endian();
   test_escaped_coefficient_roundtrip();
+  test_monitor_rid_range_and_c0_alias();
   test_index_out_of_range_builds_nothing();
 
   if (failures != 0) {
