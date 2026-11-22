@@ -29,7 +29,7 @@ This is the load-bearing part of the protocol, and it is now confirmed twice ove
 | CRC | **CRC-16/GSM**: poly `0x1021`, init `0x0000`, RefIn/RefOut false, XorOut `0xFFFF`; scope = address byte (low 8 bits) + unescaped payload; **big-endian** on the wire; escaped like any other byte |
 | Addressing | `0x01` host · `0x02…` dynamically leased device IDs · `0xF0` multicast · `0xFF` broadcast · all device replies come from `0x01` |
 | Discovery | `FF FE` probe → device replies with 3-byte hardware ID → `F0 02 [id0 id1 id2][newaddr]` → device acks with its new address |
-| Volume | 24-bit **linear gain**, big-endian, `round(10^(dB/20) × 2^23)`, broadcast on `0x1F`, fire-and-forget |
+| Volume | 24-bit **linear gain**, big-endian, broadcast on `0x1F`, fire-and-forget; the corrected scale and quantization are in §7.16 |
 | Opcodes | `02` assign ID · `04` broadcast sync · `08` telemetry poll · `09` reply · `19` serial · `1F` volume · `2B` mute/front-LED presentation · `39` info · `3A` ISS settings/power · `3B` bass mgmt · `40` input select · `FE` discovery |
 | Telemetry | Tag/value stream after `09 41`, tags `41 42 43 45 47 81 83 84`, `47 01` = active / `47 02` = standby |
 | Power-off | `3A 03 02` ×2 then `3A 03 00` ×2 |
@@ -346,7 +346,9 @@ marked *upstream* are corrections to HLM's specification.
     volume limit is −20 dB, nowhere near any of them, and −8.38 dB is far too large for a
     plausible output ceiling. The scale is also **2²³ − 1, not 2²³**: 0 dB is transmitted as
     `7F FF FF`, and 2²³ does not fit the 24-bit field.
-    `round(10^(dB/20) × 8388607)` reproduces every observed value exactly.
+    Both flooring and rounding `10^(dB/20) × 8388607` reproduce these observed values, so
+    these captures alone do not distinguish them. The bus interface manual specifies
+    flooring; the component uses that rule with double-precision intermediates.
 17. *(upstream)* **`10 02` is in 48 kHz samples on every device class**, which settles
     Appendix B item 8's 4× ambiguity for subwoofers. On a subwoofer the value is the AutoPhase
     angle expressed as a delay:

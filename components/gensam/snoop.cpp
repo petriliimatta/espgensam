@@ -8,6 +8,8 @@
 #include "esphome/core/log.h"
 #include "esphome/components/select/select.h"
 
+#include <algorithm>
+
 static const char *const TAG = "gensam";
 
 namespace esphome {
@@ -313,7 +315,7 @@ void GenSAMHub::snoop_dsp_(const Frame &frame) {
     // clamp - which would quietly disagree with the speaker - stop asserting the level at
     // all, exactly as snoop_audio_source_() does for a source it cannot name. Otherwise
     // configure_monitor_() would undo the change at the next standby cycle.
-    if (db < MIN_LEVEL_DB) {
+    if (decode_int24(&frame.payload[2]) < volume_db_to_int24(MIN_LEVEL_DB)) {
       if (b != nullptr && b->level_configured) {
         b->level_configured = false;
         ESP_LOGW(TAG, "[Sniffed] Monitor 0x%02X level set to %.1f dB, below the %.0f dB this "
@@ -322,9 +324,11 @@ void GenSAMHub::snoop_dsp_(const Frame &frame) {
       }
       return;
     }
+    // The minimum's floored wire value decodes slightly below the requested dB bound.
+    db = std::max(db, MIN_LEVEL_DB);
 
     // Compare as encoded, which is what "the same setting" means on the wire: two decibel
-    // values that round to one level word are the same trim.
+    // values that quantize to one level word are the same trim.
     const bool changed = b == nullptr || !b->level_configured ||
                          volume_db_to_int24(b->level_db) != volume_db_to_int24(db);
     registry_.set_level(*mon, db);

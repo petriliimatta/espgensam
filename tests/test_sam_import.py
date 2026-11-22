@@ -112,7 +112,7 @@ def test_group_sensitivity_is_summed_into_the_level():
     # GLM applies the group-level trim on top of each device's own calibration, and sends the
     # sum as one level word. Confirmed against captures/glm_lfe_capture.log: a group carrying
     # Group_Sensitivity:-0.3 with Level_Sensitivity:0 put 10 01 00 7B A7 8D on the wire to all
-    # three speakers, and round(10^(-0.3/20) * 8388607) == 0x7BA78D exactly. Dropping it plays
+    # three speakers, and floor(10^(-0.3/20) * 8388607) == 0x7BA78D exactly. Dropping it plays
     # the whole group 0.3 dB loud.
     text = make_sam().replace("Group_Sensitivity:0", "Group_Sensitivity:-0.3", 1)
     groups, warnings = convert(text)

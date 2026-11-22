@@ -16,7 +16,11 @@
 ///        dB = 20.0 * log10(vol_ratio)
 ///    - Inverse (dB to 24-bit fixed point):
 ///        vol_ratio = 10^(dB / 20.0)
-///        sint24    = round(vol_ratio * (2^23 - 1))
+///        sint24    = floor(vol_ratio * (2^23 - 1))
+///      Use double-precision intermediates so float rounding cannot move the result across
+///      an integer boundary. At or below -130 dB the component instead sends digital silence;
+///      0 dB and above saturate at unity. Negative inputs stay below unity even when the ratio
+///      is too close to 1 to distinguish in double precision.
 ///
 /// 2. Wire Representation (Big-Endian):
 ///    Volume is transmitted over RS-485 via CMD_VOLUME (0x1F) as a 3-byte payload:
@@ -65,7 +69,7 @@ inline float volume_int24_to_db(uint32_t val) {
 
 /// @brief Convert decibels (dBFS) to a Genelec 24-bit fixed-point integer.
 /// @param db Decibel level (<= 0.0 dBFS, or negative).
-/// @return 24-bit unsigned integer clamped to [0, 8,388,607].
+/// @return Floor-quantized gain, or zero at/below -130 dB and unity at/above 0 dB.
 inline uint32_t volume_db_to_int24(float db) {
   if (db <= GENELEC_VOLUME_MIN_DB) {
     return 0;
@@ -73,9 +77,9 @@ inline uint32_t volume_db_to_int24(float db) {
   if (db >= 0.0f) {
     return GENELEC_VOLUME_MAX_INT24;
   }
-  float ratio = std::pow(10.0f, db / 20.0f);
-  double val = std::round(static_cast<double>(ratio) * static_cast<double>(GENELEC_VOLUME_MAX_INT24));
-  return static_cast<uint32_t>(std::clamp(val, 0.0, static_cast<double>(GENELEC_VOLUME_MAX_INT24)));
+  const double ratio = std::pow(10.0, static_cast<double>(db) / 20.0);
+  const double val = std::floor(ratio * static_cast<double>(GENELEC_VOLUME_MAX_INT24));
+  return static_cast<uint32_t>(std::clamp(val, 0.0, static_cast<double>(GENELEC_VOLUME_MAX_INT24 - 1)));
 }
 
 /// @brief Clamp a per-device level trim to the range the hardware may safely be given.

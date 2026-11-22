@@ -12,12 +12,12 @@
 /// ===================================================================================
 /// WHAT THIS PINS DOWN
 /// ===================================================================================
-/// Every expected frame is a verbatim capture of GLM configuring a calibrated 7350A + 2x
+/// The captured frames are verbatim from GLM configuring a calibrated 7350A + 2x
 /// 8330A, mostly from captures/glm_group_switch_capture.log (three groups of
 /// captures/glm-config/Home Cinema.sam) and the rest from captures/glm_lfe_capture.log and
 /// glm_lfe2_capture.log, which added a group trim and an LFE feed. They are complete frames
 /// -- address, payload, CRC and delimiter -- so a pass means our bytes are indistinguishable
-/// from Genelec's.
+/// from Genelec's. Separate formula-derived vectors verify volume quantization.
 ///
 /// 1. The level scale. The protocol specification says the 24-bit level field uses a scale of
 ///    2^23, but 0 dB is transmitted as 0x7FFFFF, which is 2^23 - 1; the larger scale does not
@@ -202,6 +202,42 @@ void test_iss_and_bypass_frames() {
 // The first two values are the same subwoofer's Level_Sensitivity in two groups, then the
 // two-way monitors' unity, then a group-wide Group_Sensitivity from a later capture. Full
 // .sam precision matters: truncating -8.37833 to -8.3783 shifts the encoded word by 11 counts.
+
+void test_volume_quantization() {
+  struct Case {
+    float db;
+    uint32_t expected;
+  };
+  // The captured -8.37833 dB word would lose one count if pow() used float intermediates.
+  const Case cases[] = {
+      {-8.37833f, 0x30C92A},
+      {-20.0f, 0x0CCCCC},
+      {-30.0f, 0x040C37},
+      {-60.0f, 0x0020C4},
+      {-100.0f, 0x000053},
+      {-129.0f, 0x000002},
+  };
+  for (const Case &c : cases) {
+    char label[96];
+    std::snprintf(label, sizeof(label), "%.5g dB uses floor-quantized 24-bit gain", c.db);
+    check(esphome::gensam::volume_db_to_int24(c.db) == c.expected, label);
+  }
+
+  check(esphome::gensam::volume_db_to_int24(-1e-20f) == 0x7FFFFE,
+        "a negative level remains below unity even when pow rounds to one");
+  check(esphome::gensam::volume_db_to_int24(0.0f) == 0x7FFFFF,
+        "zero dB remains unity");
+  check(esphome::gensam::volume_db_to_int24(-130.0f) == 0,
+        "-130 dB retains the digital-silence cutoff");
+  check(esphome::gensam::volume_db_to_int24(std::nextafter(-130.0f, 0.0f)) == 2,
+        "the first float above the silence cutoff uses floor quantization");
+
+  check_wire("volume -20 dB uses the floor-quantized wire value",
+             esphome::gensam::make_broadcast_volume_db(-20.0f),
+             "FF' 1F 0C CC CC 54 81 7E");
+  check_wire("level -20 dB uses the same floor-quantized wire value",
+             make_level(0x02, -20.0f), "02' 10 01 00 0C CC CC 11 51 7E");
+}
 
 void test_captured_level_frames() {
   check_wire("level -1.9258 dB on 0x02 matches capture", make_level(0x02, -1.9258f),
@@ -566,6 +602,7 @@ int main() {
   test_captured_lfe_level_frames();
   test_captured_lfe_routing_frames();
   test_lfe_level_encoding_details();
+  test_volume_quantization();
   test_captured_level_frames();
   test_level_encoding_details();
   test_level_shares_the_volume_encoding();

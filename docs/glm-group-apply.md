@@ -297,10 +297,12 @@ GLM sent `10 01 00 7B A7 8D` to **all three speakers** in that group and `10 01 
 the other two. And:
 
 ```
-round(10^((Level_Sensitivity + Group_Sensitivity) / 20) x 8388607) == 0x7BA78D
+floor(10^((Level_Sensitivity + Group_Sensitivity) / 20) x 8388607) == 0x7BA78D
 ```
 
-exactly, for every device in every group. So the field is the sum of the device's own
+exactly, for every device in every group. Rounding also produces this captured word, so the
+capture does not distinguish it from the flooring specified by the bus interface manual.
+The field is the sum of the device's own
 calibration trim and the group's offset, not the per-device trim alone — which is all the
 earlier captures could show, because their `Group_Sensitivity` was zero throughout.
 
