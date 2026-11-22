@@ -66,6 +66,8 @@ int main() {
   assert(describe("8350A", 0x00000018) == "Digital A+B");
   assert(describe("8320A", 0x00000180) == "Treble tilt -2 dB");
   assert(describe("8320A", 0x00003000) == "Bass roll-off -6 dB");
+  assert(describe("8320A", 0x00001000) == "Bass roll-off -4 dB");
+  assert(describe("8320A", 0x00002000) == "Bass roll-off -2 dB");
   assert(describe("8320A", 0x00000C24) ==
          "Level -10 dB, ISS, Desktop 160 Hz -4 dB, Bass tilt -2 dB");
   assert(describe("8330A", 0x80000001) == "Stored, Switches not valid (bit 31)");
@@ -83,9 +85,13 @@ int main() {
   // Subwoofer table (guide 6.7.1, 7350A): stored is bit 2, not bit 0.
   assert(describe("7350A", 0x00000004) == "Stored");
   assert(describe("7350A", 0x00000001) == "Unknown bits 0x1");
+  assert(describe("7350A", 0x00001000) == "Bass roll-off -4 dB");
+  assert(describe("7350A", 0x00002000) == "Bass roll-off -8 dB");
+  assert(describe("7350A", 0x00000400) == "Phase 180°");
+  assert(describe("7350A", 0x00000800) == "Phase 90°");
   assert(describe("7350A", 0xC0000004) ==
          "Stored, Stored override (bit 30), Switches not valid (bit 31)");
-  assert(describe("7360A", 0x00003C00) == "Bass roll-off -12 dB, Phase -270°");
+  assert(describe("7360A", 0x00003C00) == "Bass roll-off -12 dB, Phase 270°");
   assert(describe("7380A", 0x000043A8) ==
          "Digital LFE, LFE channel A, LFE +10 dB, Level -20 dB, ISS, Bypass");
 

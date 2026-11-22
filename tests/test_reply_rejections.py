@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +12,12 @@ COMPONENT = ROOT / "components/gensam"
 
 
 def main():
-    source = RACE_CPP.read_text()
+    if "--baseline" in sys.argv:
+        source = subprocess.check_output(
+            ["git", "show", "HEAD:components/gensam/race.cpp"], cwd=ROOT, text=True
+        )
+    else:
+        source = RACE_CPP.read_text()
     signature = "bool GenSAMHub::handle_command_rejection_("
     start = source.index(signature)
     end = source.index("\n}\n", start) + 3
@@ -30,7 +36,12 @@ enum class RaceState {
 };
 constexpr uint8_t SLEEP_PROBE_IDLE = 0;
 struct Frame { uint8_t address, command; };
-struct GroupApplyState { bool active = false, rejected = false; };
+struct GroupApplyState {
+  bool active = false, rejected = false, awaiting_reply = false;
+  size_t device_idx = 0;
+  uint8_t step = 0;
+  uint32_t last_tx_ms = 0;
+};
 class GenSAMHub {
  public:
   RaceState race_state_ = RaceState::IDLE;
@@ -73,8 +84,14 @@ int main() {
   GenSAMHub group;
   group.race_state_ = RaceState::APPLYING_GROUP;
   group.apply_.active = true;
+  group.apply_.awaiting_reply = true;
+  group.apply_.device_idx = 2;
+  group.apply_.step = 7;
+  group.current_query_addr_ = 6;
   assert(group.handle_command_rejection_({HOST_ADDRESS, CMD_UNSUPPORTED}, 40));
-  assert(group.apply_.rejected);
+  assert(group.apply_.rejected && !group.apply_.awaiting_reply);
+  assert(group.current_query_addr_ == 0 && group.apply_.device_idx == 3 &&
+         group.apply_.step == 0 && group.apply_.last_tx_ms == 40);
 
   GenSAMHub unrelated;
   assert(!unrelated.handle_command_rejection_({HOST_ADDRESS, CMD_UNSUPPORTED}, 50));

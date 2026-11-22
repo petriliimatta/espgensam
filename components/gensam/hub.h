@@ -239,6 +239,7 @@ struct GroupApplyState {
   uint32_t last_tx_ms{0};      ///< millis() of the last frame sent, for pacing.
   uint32_t started_ms{0};      ///< millis() at entry, for the stall timeout.
   bool ducked{false};          ///< Whether volume was lowered and still needs restoring.
+  bool awaiting_reply{false};  ///< A unicast step may still receive an ACK or rejection.
   uint8_t configured{0};       ///< Devices actually reached, as opposed to skipped offline.
   bool rejected{false};        ///< At least one monitor rejected a group command.
 };

@@ -93,8 +93,8 @@ The bit layout depends on the model family:
 | Others (e.g. 1237A, 1238A, W371A) | None | Raw word only; their manuals show no DIP switches |
 
 Paired switches whose effects add are shown as their sum (Level -10 and -20 dB as -30 dB, Treble
-tilt +2 and -4 dB as -2 dB). Phase labels follow the subwoofer panel (-90° / -180°). Bits 31 and
-30 are the status flags of guide §6.7.2 ("switches not valid or stored"); reading the pair in
+tilt +2 and -4 dB as -2 dB). Phase labels follow the manual's positive 180° / 90° / 270° values.
+Bits 31 and 30 are the status flags of guide §6.7.2 ("switches not valid or stored"); reading the pair in
 order, they are shown as `Switches not valid (bit 31)` and `Stored override (bit 30)` on both
 families. Any other bit the table does not define is shown as `Unknown bits`.
 
@@ -106,8 +106,10 @@ an internal level variable and is not shown.
 
 - **`0x8A`.** The high bits of the `0x49` counter, sent about every 30th reply. It is already
   consumed correctly by the generic two-byte `0x8x` rule.
-- **The `0x06` marker.** The guide calls this the "busy" byte, seen around restarts. This
-  matches §4.3 of the comparison doc: it is not a power state.
+- **The `0x06` event.** The guide calls this the "busy" byte, seen around restarts, while bus
+  interface manual v1.2 defines it as digital input unavailable (`0x07` = available). The parser
+  follows the manual's event semantics and never treats either value as a power state; see
+  §4.3 of the comparison doc for the evidence conflict.
 
 ## 3. ISS sleep delay and sensitivity
 

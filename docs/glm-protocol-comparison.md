@@ -132,14 +132,18 @@ Both classes report `47 01` (active) throughout. HLM only ever saw `02` because 
 
 HLM also has a length bug here: the spec says `84` carries **2** bytes, but `hlm/src/HLM/hub_app.c:441-443` consumes 1. The `else if (tag == 0xB0) idx += 2;` branch at `:461` is a patch over the resulting misalignment (`B0` is the second byte of `84 02 B0`, mistaken for a tag). espgensam's generic `(tag & 0xF0) == 0x80 → skip 2` rule handles the whole `0x8x` family correctly.
 
-### 4.3 The `0x06` / `0x07` reply prefix — an earlier `STATUS_STANDBY` reading was wrong
+### 4.3 The `0x02`–`0x07` telemetry events
 
-Both projects saw an extra byte between the `09` reply opcode and the `41` telemetry tag. Each handles a different value:
+The bus interface manual v1.2 defines `0x02`/`0x03` as protection started/ended, `0x04` as
+clipping, `0x05` as factory lock opened, and `0x06`/`0x07` as digital input unavailable/available.
+The decoding guide calls `0x06` a busy byte, while HLM calls it a settings-write/persistence marker
+and does not handle `0x07`; those descriptions conflict with the manual's event names.
 
-- **HLM** handles `0x06`: a settings-write/persistence marker, appearing ~0.6–1.1 s after config pushes, also seen bare as `09 06`. It does **not** handle `0x07` — such a frame falls through to `unknown_message()` and is dropped.
-- **At the revision examined here**, espgensam handled `0x07` as `STATUS_STANDBY` (commit `968fdc4`), forcing `monitor.standby = true` and explicitly refusing to let tag `47` clear it (`components/gensam/monitor.cpp:193-199`). It had no notion of `0x06` (the scan-based TLV walk skipped it harmlessly, and a bare `[06]` was silently ignored).
-
-The captures contain both, and they show the original observation was right while its conclusion was backwards. The marker does follow a wake — in all three captures it appears **~1.6 s after a `3A 03 7F` / `3A 03 01` burst** (1.57 s in `glm_startup`, 1.57 s in `glm_v5_no_wakeup`, 1.60 s in `glm_source_select`). But every marker-bearing frame carries **`47 01` — active**: the monitor has *finished* waking. Nor is the byte positional — 10 frames carry it leading, 5 carry it trailing (`41 29 … 47 01 84 01 6C 06`, all from the 7350A), and 2 consist of nothing else. No capture contains `47 02` anywhere.
+The captures contain `0x06` and `0x07` before, after, and alone in telemetry replies, often after a
+wake or configuration push. Marker-bearing full replies also carry `47 01` (active), which proves
+that neither value is a standby report but does not establish that either is framing. The component
+now follows the manual: it preserves `0x02`–`0x07` as one-byte events, updates protection and
+digital-input state, and continues to use `0x47` as the sole power-state report.
 
 ```
 [21:11:14.768] addr=0x01 cmd=0x09 payload=[07 41 13 83 00 25 42 00 46 FA 43 80 45 9D 47 01 84 01 6C]
@@ -151,7 +155,8 @@ The captures contain both, and they show the original observation was right whil
 
 At that revision, a `0x07` prefix on an active frame set `standby = true` and blocked tag `47 01` from clearing it. In this capture all three monitors got the prefix in the same round, which was enough for `evaluate_system_standby_()` to flip the whole system to standby in Home Assistant. A false standby was expensive rather than cosmetic: `set_volume_db` kept publishing to Home Assistant while transmitting nothing, so the slider moved and the speakers did not; the next `rediscover_monitors()` could escalate it into a genuine `send_standby()` on the wire.
 
-**Current status:** espgensam treats `0x06` and `0x07` as transparent telemetry markers, not power states. Tag `0x47` with a valid operand is the authority for power state. The fix and regression tests are described in §7, item 1.
+**Current status:** espgensam parses the six documented event tags without shifting adjacent records.
+Tag `0x47` with a valid operand remains the authority for power state.
 
 ### 4.4 `0x40` — espgensam's model is a strict superset
 
@@ -289,7 +294,7 @@ The two projects are close to complementary: espgensam is deeper on device topol
 
 **Correctness — espgensam**
 
-1. ~~**Re-examine `STATUS_STANDBY = 0x07`.**~~ **Done (§4.3).** `STATUS_STANDBY` is replaced by `is_telemetry_marker()`; `0x06`/`0x07` are stripped at either end without touching power state, tag `0x47` is the sole authority with its operand validated, and a marker-only payload updates nothing. Regression cover in `tests/test_parse_telemetry.cpp`, which fails six checks against the pre-fix code.
+1. ~~**Re-examine `STATUS_STANDBY = 0x07`.**~~ **Done (§4.3).** The parser treats `0x02`–`0x07` as one-byte events; `0x06`/`0x07` update digital-input availability and never affect power state. Tag `0x47` remains the sole power-state report. Regression coverage is in `tests/test_parse_telemetry.cpp`.
 2. ~~**Swap the `0x43` / `0x45` labels.**~~ **Done.** `0x43` = HF/tweeter, `0x45` = LF/woofer, confirmed again on live hardware: with music playing, a 7350A reported `0x43` at the `0x80` floor in 164/164 frames while `0x45` swung `0x80`–`0xF1`. Behaviour is unchanged (`max()` across channels). `0x46` was relabelled at the same time — it is subwoofer-only, but has been seen both dominating while `0x45` floored and floored while `0x45` swung, so calling it "the subwoofer's output" overstates what is known.
 3. ~~**Re-check the bus baud rate.**~~ **Done — measured at ~288,000 baud and updated in espgensam (§2).** HLM's generated rate is 2.88% high against that measurement.
 
@@ -382,7 +387,7 @@ marked *upstream* are corrections to HLM's specification.
 8. `0x04` is a periodic hub keep-alive sent bare, not a `BC 84` config preamble (capture evidence, §4.8).
 9. `0x40` byte 3 is a pair selector and byte 4 is the AES3 sub-channel, not a counter (six payload variants, §4.4).
 10. `0x84` correlates with device class, and the `0x84` value length is 2 bytes — `hub_app.c:441` consumes 1, which the `0xB0` branch at `:461` is silently patching over.
-11. HLM does not handle `0x07`; espgensam now treats both observed `0x06` and `0x07` values as transparent telemetry markers (§4.3).
+11. HLM does not handle `0x07`; espgensam parses the manual's `0x06`/`0x07` digital-input events (§4.3).
 12. Telemetry tags `0x44` (midrange) and `0x46` (subwoofer driver) exist on models other than two-ways.
 13. Opcodes `0x3C`, `0x3E`, `0x42` (all with `[00 00]`) appear in OEM traffic and are in neither spec.
 14. The OEM wake sequence is `3A 03 7F` / `3A 03 01` ×3 with no trailing `03 02`; and the `03 02` value appears at the head of the power-**off** sequence, which contradicts the "System ON" label.
@@ -395,7 +400,7 @@ These are hardware tests.
 
 **Baud rate — done.** Implemented as `baud_sweep` in espgensam on the `baud-rate-sweep` branch (`components/gensam/baud_sweep.cpp`; kept off `main`, where it would cost ISR time and 2 KB of RAM for a one-off diagnostic) and measured at ~288,000 baud; result in §2. Worth noting for anyone repeating it: counting decode failures per candidate rate does **not** work, because the receiver tolerates the whole disputed span. Fit the bit period to the raw edge intervals instead, measuring edge-to-edge across a full RMT symbol so that asymmetric rise/fall on the line cancels. An independent confirmation with a scope — capturing the recurring `F0 1F 00 67 9F` heartbeat, whose byte values are known — would remove the dependence on the ESP32's own clock.
 
-**`0x07` prefix — resolved.** Captures show marker-bearing replies with `47 01` (active); espgensam now strips `0x06`/`0x07` markers without changing power state. Regression coverage is in `tests/test_parse_telemetry.cpp`.
+**`0x07` prefix — resolved.** Captures show event-bearing replies with `47 01` (active); espgensam now records `0x06`/`0x07` as digital-input events without changing power state. Regression coverage is in `tests/test_parse_telemetry.cpp`.
 
 **`0x43` / `0x45`.** Play a 10 kHz tone and then a 40 Hz tone into one 8330A and watch which tag moves. Expect `43` on the tone and `45` on the bass.
 
@@ -406,7 +411,7 @@ These are hardware tests.
 **High-shelf Q — withdrawn.** This asked for a large high-shelf gain, driven through the Sound Character Profiler, to settle `SHELF_Q_HIGH`. The existing capture already settles it; see §7.1 item 15 for why the near-flat shelves are sufficient and what the earlier reasoning got wrong. Noted in passing for anyone running an SCP capture for some other purpose: GLM clamps High Shelf 1 to +3 dB, so the ±6–10 dB this entry used to suggest is not reachable from that dialog.
 
 The host regression test `tests/test_parse_telemetry.cpp` feeds captured payloads to
-`parse_telemetry()` and checks marker-prefixed, bare and unprefixed forms, power state, levels
+`parse_telemetry()` and checks event-prefixed, bare and unprefixed forms, power state, levels
 and temperature for both subwoofer and two-way frame shapes.
 
 ## 9. ISS standalone-store capture (2026-11-16)

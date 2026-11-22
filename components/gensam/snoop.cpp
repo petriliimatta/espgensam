@@ -65,27 +65,10 @@ void GenSAMHub::snoop_volume_(const Frame &frame) {
 }
 
 void GenSAMHub::snoop_power_(const Frame &frame) {
-  if (frame.address != BROADCAST_ADDRESS ||
-      frame.command != CMD_WAKEUP || frame.payload.size() < 2 || frame.payload[0] != WAKEUP_OP_POWER) {
-    return;
-  }
-
-  // 0x00 is a short-press/toggle request, not a stable power state. The preceding 0x02
-  // request is GLM's explicit standby phase; F0 only reaches unassigned monitors.
-  bool is_standby = frame.payload[1] == WAKEUP_VAL_STANDBY_1;
-  bool is_on = (frame.payload[1] == WAKEUP_VAL_ON_1 || frame.payload[1] == WAKEUP_VAL_ON_2);
-  if (is_standby && !current_standby_) {
-    current_standby_ = true;
-    last_standby_command_ = millis();
-    ESP_LOGI(TAG, "[Sniffed] System power state updated to STANDBY (val 0x%02X)", frame.payload[1]);
-    this->notify_state_callbacks_();
-    this->update_bus_status_();
-  } else if (is_on && current_standby_) {
-    current_standby_ = false;
-    last_standby_command_ = millis();
-    ESP_LOGI(TAG, "[Sniffed] System power state updated to ON (val 0x%02X)", frame.payload[1]);
-    this->notify_state_callbacks_();
-    this->update_bus_status_();
+  if (frame.address == BROADCAST_ADDRESS && frame.command == CMD_WAKEUP &&
+      frame.payload.size() >= 2 && frame.payload[0] == WAKEUP_OP_POWER) {
+    ESP_LOGD(TAG, "[Sniffed] Power request 0x%02X observed; awaiting monitor telemetry",
+             frame.payload[1]);
   }
 }
 

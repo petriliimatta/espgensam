@@ -3,6 +3,7 @@
 /// See monitor.h for architectural design rationale and complete API documentation.
 
 #include "monitor.h"
+#include <algorithm>
 #include <cstdio>
 #include <sstream>
 #include <initializer_list>
@@ -145,25 +146,11 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
     return false;
   }
 
-  // Check for Tagged TLV format (modern GLMv3-v5 monitors report ASCII-tagged records).
-  //
-  // A reply may carry a lone 0x06/0x07 marker byte alongside its records. It is not a power
-  // state (see is_telemetry_marker() in const.h) and must never touch standby. Strip a leading
-  // one so the records align at index 0. A trailing marker -- which the captures also show --
-  // needs no handling here: it matches no tag, and the scan below simply steps over it. Do not
-  // "improve" this into positional handling; the byte has been observed at either end.
+  // Modern telemetry uses tagged records. One-byte event tags may appear before, between, or
+  // after data records, so process them in the same scan rather than treating them as framing.
   const uint8_t *tlv_data = data;
-  size_t tlv_len = len;
-  if (is_telemetry_marker(tlv_data[0])) {
-    tlv_data++;
-    tlv_len--;
-  }
-
-  // A marker on its own is the whole payload: the monitor answered, but reported nothing this
-  // round. Update no fields, especially standby_known: a marker carries no power information.
-  if (tlv_len == 0) {
-    return false;
-  }
+  const size_t tlv_len = len;
+  monitor.last_telemetry_events.clear();
 
   // Tags:
   //   0x41: Amp/DSP Temperature (°C)
@@ -174,6 +161,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   //   0x46: LFE input peak (subwoofer only), not a driver output meter
   //   0x47: Power State (0x01 = Active, 0x02 = Standby, 0x03 = transition, 0x04 = observed wake)
   //   0x49: Telemetry counter (1 byte, value unused)
+  //   0x02-0x07: one-byte protection, clipping, factory-lock and digital-input events
   //   0x81 / 0x82 / 0x83: TW / MD / BS voice-coil temperature (00 [degC], modelled)
   //   0x84: processor load, 16 bits in per mille
   //   0x88 / 0x89: main / low supply rail, percent of span (three-way models)
@@ -187,31 +175,65 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   // 0x46 is the LFE input peak. It is parsed as a telemetry record but is not part of the
   // post-volume/post-mute driver output peak reported by output_db.
   bool found_tag = false;
-  bool found_output = false;
-  int8_t max_output_db = -128;
+  bool found_data_tag = false;
+  bool only_event_tags = true;
   for (size_t i = 0; i < tlv_len; i++) {
     uint8_t tag = tlv_data[i];
-    if (tag == 0x41 && i + 1 < tlv_len) {  // 'A' = Temperature
+    if (is_telemetry_event_tag(tag)) {
+      monitor.last_telemetry_events.push_back(tag);
+      if (tag == TELEMETRY_EVENT_PROTECTION_STARTED) {
+        monitor.protection_active = true;
+        monitor.protection_known = true;
+      } else if (tag == TELEMETRY_EVENT_PROTECTION_ENDED) {
+        monitor.protection_active = false;
+        monitor.protection_known = true;
+      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_UNAVAILABLE) {
+        monitor.digital_input_available = false;
+        monitor.digital_input_known = true;
+      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_AVAILABLE) {
+        monitor.digital_input_available = true;
+        monitor.digital_input_known = true;
+      }
+      found_tag = true;
+    } else if (tag == 0x41 && i + 1 < tlv_len) {  // 'A' = Temperature
       monitor.temperature = static_cast<int8_t>(tlv_data[i + 1]);
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if (tag == 0x42 && i + 1 < tlv_len) {  // 'B' = Input level
       monitor.input_db = static_cast<int8_t>(tlv_data[i + 1]);
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if ((tag == 0x43 || tag == 0x44 || tag == 0x45) && i + 1 < tlv_len) {
       // Per-channel output meters (see the tag table above). The monitor's overall output level
       // tracks the peak across whichever channels this model reports, so the individual
       // assignments do not affect it -- they matter only for reading the raw frames.
-      int8_t level = static_cast<int8_t>(tlv_data[i + 1]);
-      if (!found_output || level > max_output_db) {
-        max_output_db = level;
+      const int8_t level = static_cast<int8_t>(tlv_data[i + 1]);
+      switch (tag) {
+        case 0x43:
+          monitor.output_tweeter_db = level;
+          monitor.output_tweeter_known = true;
+          break;
+        case 0x44:
+          monitor.output_midrange_db = level;
+          monitor.output_midrange_known = true;
+          break;
+        case 0x45:
+          monitor.output_woofer_db = level;
+          monitor.output_woofer_known = true;
+          break;
       }
-      found_output = true;
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if (tag == 0x46 && i + 1 < tlv_len) {
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if (tag == 0x47 && i + 1 < tlv_len &&
                tlv_data[i + 1] >= 0x01 && tlv_data[i + 1] <= 0x04) {
@@ -223,12 +245,16 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
         monitor.standby = power == 0x02;
       }
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if (tag == 0x49 && i + 1 < tlv_len) {
       // 'I' = the speaker's own telemetry counter. Nothing uses the value, but it must be consumed:
       // it walks through every byte value, and a counter equal to another tag would otherwise be
       // read as that tag, taking the next tag byte as its operand.
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i++;
     } else if ((tag & 0xF0) == 0x80 && i + 2 < tlv_len) {
       // 2-byte records. The coil temperatures are 00 [degC]; the supply monitors are a percentage
@@ -258,15 +284,28 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
           break;
       }
       found_tag = true;
+      found_data_tag = true;
+      only_event_tags = false;
       i += 2;
+    } else {
+      only_event_tags = false;
     }
   }
 
-  if (found_output) {
-    monitor.output_db = max_output_db;
+  if (monitor.output_tweeter_known || monitor.output_midrange_known || monitor.output_woofer_known) {
+    monitor.output_db = -128;
+    if (monitor.output_tweeter_known) {
+      monitor.output_db = std::max(monitor.output_db, monitor.output_tweeter_db);
+    }
+    if (monitor.output_midrange_known) {
+      monitor.output_db = std::max(monitor.output_db, monitor.output_midrange_db);
+    }
+    if (monitor.output_woofer_known) {
+      monitor.output_db = std::max(monitor.output_db, monitor.output_woofer_db);
+    }
   }
 
-  if (found_tag) {
+  if (found_data_tag || (found_tag && (only_event_tags || tlv_len < 13))) {
     return true;
   }
 
@@ -275,9 +314,9 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   // Byte 6: Input level (dBFS)
   // Byte 12: Output level (dBFS)
   //
-  // Deliberately reads raw data/len, not tlv_data/tlv_len: these offsets are absolute, so the
-  // marker strip above must not shift them. The two pointers look interchangeable here and are
-  // not. Format A carries no power field, which is why standby is left untouched below.
+  // Deliberately reads raw data/len, not a cursor advanced by the TLV scan: these offsets are
+  // absolute, and a leading one-byte event must not shift them. Format A carries no power field,
+  // which is why standby is left untouched below.
   if (len >= 7) {
     monitor.temperature = static_cast<int8_t>(data[1]);
     monitor.input_db = static_cast<int8_t>(data[6]);
@@ -340,8 +379,8 @@ constexpr DipField MONITOR_DIP_FIELDS[] = {
 
 /// @brief Bit table of the SAM subwoofers (guide section 6.7.1, 7350A), in rear-panel order.
 constexpr DipField SUBWOOFER_DIP_FIELDS[] = {
-    {0x3000, {"Bass roll-off -8 dB", "Bass roll-off -4 dB", "Bass roll-off -12 dB"}},
-    {0x0C00, {"Phase -180°", "Phase -90°", "Phase -270°"}},
+    {0x3000, {"Bass roll-off -4 dB", "Bass roll-off -8 dB", "Bass roll-off -12 dB"}},
+    {0x0C00, {"Phase 180°", "Phase 90°", "Phase 270°"}},
     {0x0200, {"Digital LFE", nullptr, nullptr}},
     {0x0100, {"LFE channel A", nullptr, nullptr}},
     {0x0080, {"LFE +10 dB", nullptr, nullptr}},

@@ -152,6 +152,17 @@ struct GenSAMMonitor {
   int8_t temperature{0};            ///< Current internal DSP/amplifier temperature in °C.
   int8_t input_db{0};               ///< Input signal level in dBFS.
   int8_t output_db{0};              ///< Driver output level in dBFS.
+  int8_t output_tweeter_db{-128};   ///< Last tag 0x43 meter value.
+  int8_t output_midrange_db{-128};  ///< Last tag 0x44 meter value.
+  int8_t output_woofer_db{-128};    ///< Last tag 0x45 meter value.
+  bool output_tweeter_known{false};  ///< True once a tag 0x43 meter value is reported.
+  bool output_midrange_known{false}; ///< True once a tag 0x44 meter value is reported.
+  bool output_woofer_known{false};   ///< True once a tag 0x45 meter value is reported.
+  std::vector<uint8_t> last_telemetry_events; ///< One-byte event tags in the latest telemetry frame.
+  bool protection_active{false};     ///< Last state from protection-started/ended event tags.
+  bool protection_known{false};      ///< True after a protection event has been reported.
+  bool digital_input_available{false}; ///< Last digital-input availability event.
+  bool digital_input_known{false};   ///< True after a digital-input event has been reported.
   float tw_coil_temperature{NAN};   ///< Modelled tweeter voice-coil temperature (°C, tag 0x81); NAN until reported.
   float md_coil_temperature{NAN};   ///< Modelled midrange voice-coil temperature (°C, tag 0x82, three-way only).
   float bs_coil_temperature{NAN};   ///< Modelled woofer voice-coil temperature (°C, tag 0x83).
@@ -218,21 +229,19 @@ bool parse_barcode(const uint8_t *data, size_t len, GenSAMMonitor &monitor);
 
 /// @brief Parse status telemetry payload from CMD_REPORT_STATUS (0x09) or CMD_QUERY_STATUS (0x08).
 ///
-/// Supports modern tagged TLV streams (0x41 temp, 0x42 input, 0x43-0x45 channel outputs, 0x46 LFE input peak,
-/// 0x47 power state, 0x49 counter, 0x81-0x83 coil temperatures, 0x88/0x89 supply rails) as well as legacy
-/// fixed-offset RACE payloads.
+/// Supports modern tagged TLV streams, including one-byte events 0x02-0x07, and legacy fixed-offset
+/// RACE payloads. Tags 0x43-0x45 are channel outputs; 0x46 is the LFE input peak.
 ///
 /// Tag 'G' (0x47) is the only field in a reply that reports power state. Values 0x01 (active) and
 /// 0x02 (standby) are stable; 0x03 (documented transition) and 0x04 (observed during wake) clear
 /// standby_known and set standby_transition until another stable report arrives. A reply may
-/// also carry a 0x06/0x07 marker byte
-/// at either end, or as its entire payload; see is_telemetry_marker() in const.h for what that byte is
-/// and is not. Markers are stripped or skipped and never affect standby. A marker-only payload means the
-/// monitor answered without reporting anything, and updates no fields.
+/// contain one-byte events before, between, or after data records. They update
+/// last_telemetry_events and their corresponding state fields but never affect standby; only tag
+/// 0x47 reports power state.
 /// @param data Pointer to raw unescaped payload buffer.
 /// @param len Payload length in bytes.
 /// @param[out] monitor Target monitor struct to update with temperature, signal levels, and standby state.
-/// @return True if any field was parsed; false for a null/empty buffer or a marker-only payload.
+/// @return False for a null or empty buffer; true for non-empty tagged or fixed-offset telemetry.
 bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor);
 
 /// @brief Parse the three big-endian words returned by CMD_DIP_SWITCH / DIPSW_READ_STATUS.

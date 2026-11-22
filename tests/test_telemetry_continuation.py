@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -11,7 +12,12 @@ RACE_CPP = COMPONENT / "race.cpp"
 
 
 def main():
-    source = RACE_CPP.read_text()
+    if "--baseline" in sys.argv:
+        source = subprocess.check_output(
+            ["git", "show", "HEAD:components/gensam/race.cpp"], cwd=ROOT, text=True
+        )
+    else:
+        source = RACE_CPP.read_text()
     signature = "bool GenSAMHub::handle_poll_continuation_("
     start = source.index(signature)
     end = source.index("\n}\n", start) + 3

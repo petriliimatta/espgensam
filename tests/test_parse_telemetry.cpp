@@ -14,16 +14,8 @@
 /// ===================================================================================
 /// WHAT THIS PINS DOWN
 /// ===================================================================================
-/// The marker payloads below are verbatim frames from captures/, cited by file and line. They exist
-/// because an earlier release read a leading 0x07 as "monitor is in standby", set standby from
-/// it, and then blocked tag 0x47 from correcting that. Every one of these frames reports tag
-/// 0x47 = 0x01, ACTIVE, so that reading inverted the truth on real traffic -- and a false
-/// standby is expensive: the volume slider keeps publishing to Home Assistant while transmitting
-/// nothing, and the next rediscovery escalates it into a genuine send_standby() on the wire.
-///
-/// The marker cases are therefore the point of the file. The cases at the end cover the two
-/// 0x47 paths the three capture files happen not to contain: a genuine standby report, and a
-/// coincidental 0x47 data byte that must not be allowed to arm standby_known.
+/// The leading, trailing, and bare 0x06/0x07 values are captured telemetry events. They update
+/// digital-input availability but never override stable power state reported by tag 0x47.
 /// ===================================================================================
 
 #include "../components/gensam/monitor.h"
@@ -61,44 +53,50 @@ GenSAMMonitor parse(std::initializer_list<uint8_t> bytes, bool *returned = nullp
 
 // --- Real capture payloads -------------------------------------------------------------------
 
-/// captures/glm_v5_no_wakeup_capture.log:296 -- 7350A, leading 0x07 marker, 1.57 s after a wake.
-void test_leading_07_marker() {
+/// captures/glm_v5_no_wakeup_capture.log:296 -- 7350A, leading 0x07 event, 1.57 s after a wake.
+void test_leading_07_event() {
   GenSAMMonitor m = parse({0x07, 0x41, 0x13, 0x83, 0x00, 0x25, 0x42, 0x00, 0x46, 0xFA,
                            0x43, 0x80, 0x45, 0x9D, 0x47, 0x01, 0x84, 0x01, 0x6C});
   check(m.standby_known, "leading 07: power state reported");
   check(!m.standby, "leading 07: ACTIVE, not standby (this is the regression)");
   check(m.temperature == 19, "leading 07: temperature 19 C");
+  check(m.digital_input_known && m.digital_input_available,
+        "leading 07: digital input is available");
 }
 
-/// captures/glm_startup_capture.log:363 -- 8330A, leading 0x06 marker, 1.57 s after a wake.
-void test_leading_06_marker() {
+/// captures/glm_startup_capture.log:363 -- 8330A, leading 0x06 event, 1.57 s after a wake.
+void test_leading_06_event() {
   GenSAMMonitor m = parse({0x06, 0x41, 0x1F, 0x81, 0x00, 0x1F, 0x83, 0x00, 0x1F, 0x42, 0x90,
                            0x43, 0x8C, 0x45, 0x84, 0x47, 0x01, 0x84, 0x02, 0xC4});
   check(m.standby_known && !m.standby, "leading 06: ACTIVE");
   check(m.temperature == 31, "leading 06: temperature 31 C");
+  check(m.digital_input_known && !m.digital_input_available,
+        "leading 06: digital input is unavailable");
 }
 
-/// captures/glm_source_select_capture.log -- 7350A, marker as the LAST byte instead of the first.
-void test_trailing_06_marker() {
+/// captures/glm_source_select_capture.log -- 7350A, event as the LAST byte instead of the first.
+void test_trailing_06_event() {
   GenSAMMonitor m = parse({0x41, 0x29, 0x83, 0x00, 0x29, 0x42, 0x95, 0x46, 0x91, 0x43, 0x80,
                            0x45, 0x80, 0x47, 0x01, 0x84, 0x01, 0x6C, 0x06});
   check(m.standby_known && !m.standby, "trailing 06: ACTIVE");
   check(m.temperature == 41, "trailing 06: temperature 41 C");
+  check(m.digital_input_known && !m.digital_input_available,
+        "trailing 06: digital input is unavailable");
 }
 
-/// captures/glm_source_select_capture.log:1853 -- the marker as the entire payload, mid wake burst.
-void test_bare_marker_touches_nothing() {
-  GenSAMMonitor before;
-  bool returned = true;
+/// captures/glm_source_select_capture.log:1853 -- a one-byte event as the entire payload.
+void test_bare_event_updates_only_its_state() {
+  bool returned = false;
   GenSAMMonitor m = parse({0x06}, &returned);
-  check(!returned, "bare 06: reports nothing parsed");
-  check(!m.standby_known, "bare 06: does not arm standby_known");
-  check(m.standby == before.standby, "bare 06: leaves standby untouched");
-  check(m.temperature == before.temperature, "bare 06: leaves temperature untouched");
+  check(returned, "bare 06: event is recognized");
+  check(m.digital_input_known && !m.digital_input_available,
+        "bare 06: updates digital-input availability");
+  check(!m.standby_known && m.temperature == 0,
+        "bare 06: does not update power or temperature");
 }
 
-/// A marked frame and its unmarked sibling one poll apart must parse identically.
-void test_marker_is_transparent() {
+/// A leading event must not shift the telemetry records that follow it.
+void test_leading_event_does_not_shift_records() {
   std::initializer_list<uint8_t> unmarked = {0x41, 0x29, 0x83, 0x00, 0x29, 0x42, 0x95, 0x46,
                                              0x91, 0x43, 0x80, 0x45, 0x80, 0x47, 0x01, 0x84,
                                              0x01, 0x6C};
@@ -107,7 +105,32 @@ void test_marker_is_transparent() {
                                 0x43, 0x80, 0x45, 0x80, 0x47, 0x01, 0x84, 0x01, 0x6C});
   check(plain.temperature == marked.temperature && plain.input_db == marked.input_db &&
             plain.output_db == marked.output_db && plain.standby == marked.standby,
-        "marker is transparent: marked frame parses as its unmarked sibling");
+        "leading event does not shift telemetry records");
+  check(marked.digital_input_known && !marked.digital_input_available,
+        "leading event updates its documented state");
+}
+
+void test_one_byte_telemetry_events() {
+  GenSAMMonitor m;
+  const uint8_t started[] = {0x02, 0x04, 0x05, 0x06};
+  check(parse_telemetry(started, sizeof(started), m),
+        "protection/clipping/lock/input events parse");
+  check(m.last_telemetry_events == std::vector<uint8_t>({0x02, 0x04, 0x05, 0x06}),
+        "event tags are preserved in wire order");
+  check(m.protection_known && m.protection_active, "protection-started event updates state");
+  check(m.digital_input_known && !m.digital_input_available,
+        "digital-input-unavailable event updates state");
+
+  const uint8_t ended[] = {0x03, 0x07};
+  parse_telemetry(ended, sizeof(ended), m);
+  check(m.protection_known && !m.protection_active, "protection-ended event updates state");
+  check(m.digital_input_available, "digital-input-available event updates state");
+
+  const uint8_t event_only_long[] = {0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x02,
+                                     0x03, 0x04, 0x05, 0x06, 0x07, 0x02};
+  parse_telemetry(event_only_long, sizeof(event_only_long), m);
+  check(m.temperature == 0 && m.input_db == 0 && m.output_db == 0,
+        "event-only payload does not fall back to fixed-offset meters");
 }
 
 /// A live 7350A frame with signal present. 0x43 sits at the floor because a subwoofer has no
@@ -121,6 +144,21 @@ void test_subwoofer_output_follows_active_channel() {
   check(m.standby_known && !m.standby, "subwoofer: ACTIVE");
 }
 
+void test_output_peak_retains_unchanged_channel_meters() {
+  GenSAMMonitor m;
+  const uint8_t first[] = {0x41, 0x19, 0x43, 0xF6, 0x45, 0xEC};
+  parse_telemetry(first, sizeof(first), m);
+  check(m.output_db == -10, "output peak combines the first channel meters");
+
+  const uint8_t woofer_update[] = {0x41, 0x19, 0x45, 0xB0};
+  parse_telemetry(woofer_update, sizeof(woofer_update), m);
+  check(m.output_db == -10, "output peak retains the unchanged tweeter meter");
+
+  const uint8_t tweeter_update[] = {0x41, 0x19, 0x43, 0xF0};
+  parse_telemetry(tweeter_update, sizeof(tweeter_update), m);
+  check(m.output_db == -16, "output peak combines the latest value of each channel");
+}
+
 void test_lfe_peak_is_not_driver_output() {
   GenSAMMonitor m = parse({0x41, 0x18, 0x43, 0x80, 0x45, 0x80, 0x46, 0xE5, 0x47, 0x01});
   check(m.output_db == static_cast<int8_t>(0x80),
@@ -132,7 +170,7 @@ void test_lfe_peak_is_not_driver_output() {
 
 /// A genuine standby reply, observed live on 2026-09-20 with the system powered down: tag 47 02,
 /// device-class/state 84 03, and the audio records dropped entirely. Note the contrast with the
-/// marker frames above -- a real standby report carries no marker and no meters.
+/// event-bearing frames above -- a real standby report carries no input event and no meters.
 void test_tag_47_standby() {
   GenSAMMonitor m = parse({0x41, 0x14, 0x47, 0x02, 0x84, 0x03, 0x8D});
   check(m.standby_known && m.standby, "tag 47 02: STANDBY reported");
@@ -165,10 +203,10 @@ void test_tag_47_transition() {
       parse_telemetry(no_power, sizeof(no_power), m);
       check(m.standby_transition && !m.standby_known,
             "transition: reply without a power tag does not clear it");
-      const uint8_t marker[] = {0x06};
-      parse_telemetry(marker, sizeof(marker), m);
+      const uint8_t event[] = {0x06};
+      parse_telemetry(event, sizeof(event), m);
       check(m.standby_transition && !m.standby_known,
-            "transition: marker-only reply does not clear it");
+            "digital-input event does not clear standby transition");
 
       const uint8_t settled[] = {0x47, static_cast<uint8_t>(previous_standby ? 0x01 : 0x02)};
       check(parse_telemetry(settled, sizeof(settled), m) &&
@@ -193,22 +231,25 @@ void test_tag_47_invalid_operand_ignored() {
   check(m.temperature == 0x1A, "stray 47: preceding records still parse");
 }
 
-/// Bare 0x07 is the case the old STATUS_STANDBY reading was built around. It never appears in
-/// any capture -- only bare 0x06 does -- but it must not be a power report either.
-void test_bare_07_is_not_standby() {
-  bool returned = true;
+/// A bare digital-input event is not a power report.
+void test_bare_07_updates_availability_not_standby() {
+  bool returned = false;
   GenSAMMonitor m = parse({0x07}, &returned);
-  check(!returned, "bare 07: reports nothing parsed");
+  check(returned, "bare 07: event is recognized");
+  check(m.digital_input_known && m.digital_input_available,
+        "bare 07: marks digital input available");
   check(!m.standby_known, "bare 07: does not arm standby_known");
 }
 
-/// Format A has no power field and absolute offsets, so a marker-looking byte 0 must not shift it.
+/// Format A has no power field and absolute offsets, so a leading event must not shift them.
 void test_format_a_unshifted() {
   GenSAMMonitor m = parse({0x07, 0x14, 0x00, 0x00, 0x00, 0x00, 0xB0, 0x00, 0x00, 0x00, 0x00,
                            0x00, 0x9C});
   check(!m.standby_known, "format A: byte 0 is not a power state");
   check(m.temperature == 0x14, "format A: temperature read from absolute offset 1");
   check(m.output_db == static_cast<int8_t>(0x9C), "format A: output read from absolute offset 12");
+  check(m.digital_input_known && m.digital_input_available,
+        "format A: leading event remains available to event consumers");
 }
 
 // --- Tag 0x49 (counter) -------------------------------------------------------------------------
@@ -280,13 +321,15 @@ void test_extended_only_continuation_does_not_fall_back_to_fixed_offsets() {
 
 int main() {
   std::printf("parse_telemetry()\n");
-  test_leading_07_marker();
-  test_leading_06_marker();
-  test_trailing_06_marker();
-  test_bare_marker_touches_nothing();
-  test_bare_07_is_not_standby();
-  test_marker_is_transparent();
+  test_leading_07_event();
+  test_leading_06_event();
+  test_trailing_06_event();
+  test_bare_event_updates_only_its_state();
+  test_bare_07_updates_availability_not_standby();
+  test_leading_event_does_not_shift_records();
+  test_one_byte_telemetry_events();
   test_subwoofer_output_follows_active_channel();
+  test_output_peak_retains_unchanged_channel_meters();
   test_lfe_peak_is_not_driver_output();
   test_tag_47_standby();
   test_tag_47_standby_truncated();

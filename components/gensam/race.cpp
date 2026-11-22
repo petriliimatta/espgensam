@@ -111,6 +111,7 @@ constexpr uint32_t GROUP_FRAME_GAP_MS = 3;
 /// two 0x7F frames and ~38 ms before the 0x01, consistently across six captured group switches.
 /// One figure for both slots is close enough and keeps a single constant.
 constexpr uint32_t GROUP_WAKE_GAP_MS = 20;
+constexpr uint32_t GROUP_REPLY_TIMEOUT_MS = 3;
 
 /// Abandon a group push that has not finished in this long.
 ///
@@ -405,6 +406,18 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
       return true;
     }
 
+    case RaceState::APPLYING_GROUP: {
+      if (!apply_.active || !apply_.awaiting_reply || current_query_addr_ == 0 ||
+          frame.address != HOST_ADDRESS ||
+          (frame.command != CMD_ACK &&
+           (frame.command != CMD_REPORT_STATUS || !frame.payload.empty()))) {
+        return false;
+      }
+      current_query_addr_ = 0;
+      apply_.awaiting_reply = false;
+      return true;
+    }
+
     case RaceState::POLLING_MONITORS: {
       if (iss_query_op_ != 0) {
         return this->handle_iss_reply_(frame, now);
@@ -421,8 +434,8 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
       this->evaluate_system_standby_();
       telemetry_continuation_addr_ = current_query_addr_;
       telemetry_continuation_ms_ = now;
-      if (frame.payload.size() == 1 && is_telemetry_marker(frame.payload[0])) {
-        ESP_LOGD(TAG, "[0x%02X %s] Telemetry: marker-only reply (0x%02X); no fields reported",
+      if (frame.payload.size() == 1 && is_telemetry_event_tag(frame.payload[0])) {
+        ESP_LOGD(TAG, "[0x%02X %s] Telemetry event 0x%02X",
                  current_query_addr_, mon.model.c_str(), frame.payload[0]);
       } else {
         ESP_LOGI(TAG, "[0x%02X %s] Telemetry: %s Temp=%d°C In=%d dBFS Out=%d dBFS",
@@ -972,6 +985,14 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
     return;
   }
 
+  if (apply_.awaiting_reply) {
+    if (now - race_step_time_ <= GROUP_REPLY_TIMEOUT_MS) {
+      return;
+    }
+    apply_.awaiting_reply = false;
+    current_query_addr_ = 0;
+  }
+
   if (now - apply_.last_tx_ms < GROUP_FRAME_GAP_MS) {
     return;
   }
@@ -993,8 +1014,14 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
     }
 
     if (apply_.step < GROUP_STEP_DONE && this->send_group_step_(*mon, dev, apply_.step)) {
+      const bool expects_reply = apply_.step != GROUP_STEP_KEEPALIVE || !dev.enabled;
       apply_.step++;
       apply_.last_tx_ms = now;
+      if (expects_reply) {
+        current_query_addr_ = mon->address;
+        apply_.awaiting_reply = true;
+        race_step_time_ = now;
+      }
       return;
     }
 
@@ -1074,10 +1101,15 @@ bool GenSAMHub::handle_command_rejection_(const Frame &frame, uint32_t now) {
       last_poll_step_time_ = now;
       return true;
     case RaceState::APPLYING_GROUP:
-      if (!apply_.active) return false;
+      if (!apply_.active || !apply_.awaiting_reply || current_query_addr_ == 0) return false;
+      ESP_LOGW(TAG, "Monitor 0x%02X returned %s during group application (reply 0x%02X)",
+               current_query_addr_, reason, frame.command);
       apply_.rejected = true;
-      ESP_LOGW(TAG, "A monitor returned %s during group application (reply 0x%02X)",
-               reason, frame.command);
+      apply_.awaiting_reply = false;
+      current_query_addr_ = 0;
+      apply_.device_idx++;
+      apply_.step = 0;
+      apply_.last_tx_ms = now;
       return true;
     case RaceState::SLEEPING:
       if (current_query_addr_ == 0) return false;

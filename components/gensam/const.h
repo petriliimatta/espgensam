@@ -281,47 +281,21 @@ static constexpr float MAX_DELAY_MS = 192.0f;
 static constexpr uint8_t ACK_OK = 0x2D;               ///< Positive ACK
 static constexpr uint8_t ACK_ERROR = 0x2E;            ///< Negative ACK
 
-// --- CMD_REPORT_STATUS (0x09) telemetry markers ---------------------------
-/// @name Telemetry reply markers
-///
-/// A 0x09 telemetry reply sometimes carries a lone 0x06 or 0x07 byte alongside its tagged
-/// records: usually as the first byte, sometimes as the last, occasionally as the whole payload.
-/// Its exact meaning is unknown. What the bus captures do establish is what it is *not*:
-///
-///  - Every marked frame observed so far also carries tag 0x47 = 0x01, i.e. amplifier ACTIVE.
-///  - It arrives on the first telemetry poll after a wake burst (0x3A 03 7F / 03 01) or after a
-///    configuration push (0x40 and friends). Both contexts are confirmed on live hardware. The
-///    delay tracks the poller rather than the speaker: 1.6 s behind a GLM adapter's cadence,
-///    3.5 s behind ours.
-///  - Genuine standby replies look nothing like this: they carry 0x47 = 0x02, drop the audio
-///    records entirely, and are unmarked (e.g. 41 14 47 02 84 03 8D, observed live).
-///  - It is not positional: 10 frames carry it leading, 5 trailing, 2 consist of nothing else.
-///  - The independent HLM project documents 0x06 as a settings-write / persistence marker and
-///    does not handle 0x07.
-///  - The GLM bus decoding guide v3.0 calls it a busy byte: it appears while the speaker is
-///    still working through a store, an apply or a wake, which fits every observation above.
-///
-/// So it reads as a transient "just woke" / "settings written" annotation on a monitor that is
-/// already running. Earlier releases named 0x07 STATUS_STANDBY and forced monitor.standby true
-/// from it, then let that override tag 0x47 — backwards, since the monitor has just *finished*
-/// waking. Tag 0x47 is the only field in a 0x09 reply that reports power state; see
-/// parse_telemetry().
-///
-/// The bounds below span exactly the two values that have been observed. Do not widen them
-/// without capture evidence: whatever this predicate accepts is silently dropped from telemetry.
+// --- CMD_REPORT_STATUS (0x09) one-byte telemetry events -------------------
+/// @name Telemetry event tags
 ///@{
-static constexpr uint8_t TELEMETRY_MARKER_FIRST = 0x06;  ///< Lowest observed marker value.
-static constexpr uint8_t TELEMETRY_MARKER_LAST = 0x07;   ///< Highest observed marker value.
+static constexpr uint8_t TELEMETRY_EVENT_PROTECTION_STARTED = 0x02;
+static constexpr uint8_t TELEMETRY_EVENT_PROTECTION_ENDED = 0x03;
+static constexpr uint8_t TELEMETRY_EVENT_CLIPPING = 0x04;
+static constexpr uint8_t TELEMETRY_EVENT_FACTORY_LOCK_OPENED = 0x05;
+static constexpr uint8_t TELEMETRY_EVENT_DIGITAL_INPUT_UNAVAILABLE = 0x06;
+static constexpr uint8_t TELEMETRY_EVENT_DIGITAL_INPUT_AVAILABLE = 0x07;
 
-/// @brief Test whether a 0x09 payload byte is a reply marker rather than a telemetry record.
-///
-/// Scoped deliberately to the 0x09 telemetry payload: 0x06 and 0x07 are unremarkable bytes
-/// elsewhere on the bus (in an ACK, a 0x1F volume triple, a serial string), so this must not be
-/// reached for outside parse_telemetry().
+/// @brief Test whether a 0x09 payload byte is a one-byte telemetry event tag.
 /// @param b Candidate payload byte.
-/// @return True for the observed marker values (0x06, 0x07), false otherwise.
-inline bool is_telemetry_marker(uint8_t b) {
-  return b >= TELEMETRY_MARKER_FIRST && b <= TELEMETRY_MARKER_LAST;
+/// @return True for event tags 0x02 through 0x07.
+inline bool is_telemetry_event_tag(uint8_t b) {
+  return b >= TELEMETRY_EVENT_PROTECTION_STARTED && b <= TELEMETRY_EVENT_DIGITAL_INPUT_AVAILABLE;
 }
 ///@}
 

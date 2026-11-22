@@ -3,6 +3,7 @@
 
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +17,12 @@ def extract(source, signature):
 
 
 def main():
-    source = (COMPONENT / "snoop.cpp").read_text()
+    if "--baseline" in sys.argv:
+        source = subprocess.check_output(
+            ["git", "show", "HEAD:components/gensam/snoop.cpp"], cwd=ROOT, text=True
+        )
+    else:
+        source = (COMPONENT / "snoop.cpp").read_text()
     methods = "\n".join(
         extract(source, f"void GenSAMHub::{name}(")
         for name in (
@@ -127,9 +133,13 @@ int main() {
   hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_STANDBY_2}));
   assert(!hub.current_standby_);  // 0x00 is a short-press/toggle request, not state.
   hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_STANDBY_1}));
-  assert(hub.current_standby_);
-  hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_ON_2}));
   assert(!hub.current_standby_);
+  hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_ON_1}));
+  assert(!hub.current_standby_);  // Power writes are requests; telemetry reports stable state.
+  hub.current_standby_ = true;
+  hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_ON_2}));
+  hub.snoop_power_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_STANDBY_1}));
+  assert(hub.current_standby_);
 }
 '''
     with tempfile.TemporaryDirectory(prefix="gensam-snoop-addressing-") as directory:
