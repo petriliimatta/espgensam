@@ -194,8 +194,10 @@ static constexpr uint8_t VOLUME_PAYLOAD_SILENCE[3] = {0x00, 0x00, 0x02};
 ///    every device class**, which resolves the 4x ambiguity the specification flags for
 ///    subwoofers. On a subwoofer the value is the AutoPhase result expressed as a delay:
 ///    round(((phase_degrees mod 360) / 360) / crossover_hz * 48000) reproduced all three
-///    captured groups exactly (289, 267 and 67 samples). The setup file's
-///    Time-of-flight_Compensation field was zero throughout and is not the source.
+///    captured groups exactly (289, 267 and 67 samples). In those captures the setup file's
+///    Time-of-flight_Compensation was zero; where it is set, GLM sends round(ms * 48) (0.85 ms
+///    was captured as 41 samples). The runtime .sam importer applies ToF alone when both are set,
+///    since how GLM combines them has not been captured.
 ///@{
 static constexpr uint8_t DSP_SUB_LEVEL = 0x01;  ///< Level compensation / boundaries.
 static constexpr uint8_t DSP_SUB_DELAY = 0x02;  ///< Time-of-flight delay, samples at 48 kHz.

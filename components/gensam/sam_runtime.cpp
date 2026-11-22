@@ -169,12 +169,23 @@ bool convert_node(const Node &node, double group_crossover, bool utf8_input, Sam
   dev.value.lfe_level_db = static_cast<float>(lfe_level);
   double normalized = std::fmod(phase, 360.0);
   if (normalized < 0) normalized += 360;
-  if ((!has_crossover || crossover == 1) && normalized != 0)
-    warnings.push_back("Phase ignored without a bass-management crossover");
-  double delay = !has_crossover || crossover == 1 ? 0 : std::nearbyint(normalized / 360.0 / crossover * 48000.0);
+  double tof_ms;
+  if (!field(node.fields, "Time-of-flight_Compensation", 0, tof_ms, error)) return false;
+  if (tof_ms < 0) { error = "Negative Time-of-flight_Compensation"; return false; }
+  double delay;
+  if (tof_ms != 0) {
+    // Both land in the one node delay and their combination is uncaptured: apply ToF alone.
+    if (normalized != 0)
+      warnings.push_back("Time-of-flight_Compensation and Phase(degrees) both set; phase ignored");
+    delay = std::nearbyint(tof_ms * 48.0);
+  } else {
+    if ((!has_crossover || crossover == 1) && normalized != 0)
+      warnings.push_back("Phase ignored without a bass-management crossover");
+    delay = !has_crossover || crossover == 1 ? 0 : std::nearbyint(normalized / 360.0 / crossover * 48000.0);
+  }
   if (delay > 9216) { error = "Delay out of range"; return false; }
   dev.value.delay_samples = static_cast<uint32_t>(delay);
-  for (const char *name : {"Optional_Gain", "Time-of-flight_Compensation", "Video_Delay", "SubwooferGroupID"}) {
+  for (const char *name : {"Optional_Gain", "Video_Delay", "SubwooferGroupID"}) {
     double v;
     if (!field(node.fields, name, 0, v, error)) return false;
     if (v != 0) warnings.push_back(std::string(name) + " is not applied");

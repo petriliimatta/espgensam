@@ -104,6 +104,14 @@ int main(int argc, char **argv) {
   assert(!warnings.empty() && presets.groups()[0].devices[0].level_db == -1);
   assert(parse_sam_runtime(replace(sam, "Crossover:90", "Crossover:1"), presets, warnings, error));
   assert(presets.groups()[0].devices[0].delay_samples == 0 && !warnings.empty());
+  const auto tof_only = replace(sam, "Phase(degrees):-165\n", "Time-of-flight_Compensation:0.85\n");
+  assert(parse_sam_runtime(tof_only, presets, warnings, error));
+  assert(presets.groups()[0].devices[0].delay_samples == 41 && warnings.empty());
+  const auto tof_and_phase = replace(sam, "Phase(degrees)", "Time-of-flight_Compensation:0.85\nPhase(degrees)");
+  assert(parse_sam_runtime(tof_and_phase, presets, warnings, error));
+  assert(presets.groups()[0].devices[0].delay_samples == 41 && warnings.size() == 1);
+  assert(!parse_sam_runtime(replace(sam, "Phase(degrees)", "Time-of-flight_Compensation:-1\nPhase(degrees)"),
+                            presets, warnings, error));
   auto twoway = replace(sam, "Class:SubwooferGen2", "Class:TwowayGen2");
   twoway = replace(twoway, "SR:12000", "SR:48000");
   twoway = replace(twoway, "Notch:1", "LP_Shelve:1\nFrequency:80\nGain:-1\nSR:48000\n"

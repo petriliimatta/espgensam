@@ -499,7 +499,9 @@ Those are baseline observations, not controlled LED or automatic-routing experim
 The group reapplication after the first store included
 `0x10 payload=[02 00 00 00 29]` to `0x0D`, consistent with the group's 0.85 ms ToF value
 being rounded to 41 samples at 48 kHz. A controlled ToF sweep is still needed to establish
-the general rounding rule and any interaction with AutoPhase.
+the general rounding rule and any interaction with AutoPhase. Until then the runtime `.sam`
+importer sends round(ms × 48) samples, and when a device has both a ToF and a nonzero
+AutoPhase angle it applies the ToF alone and warns.
 
 The original settings were restored and observed on the wire: 10 min, High, LEDs On.
 No ESPGenSAM `TX ->` records occurred. The log contains some invalid-CRC frames elsewhere;
