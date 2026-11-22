@@ -30,6 +30,7 @@ void GenSAMHub::snoop_frame_(const Frame &frame) {
 void GenSAMHub::snoop_addressing_(const Frame &frame) {
   if (is_monitor_address(frame.address)) {
     // Remember the outstanding query so snoop_host_reply_ can attribute the answer.
+    telemetry_continuation_addr_ = 0;
     last_queried_addr_ = frame.address;
     last_queried_cmd_ = frame.command;
     last_queried_dip_status_ = is_dip_switch_status_query(frame);
@@ -64,12 +65,14 @@ void GenSAMHub::snoop_volume_(const Frame &frame) {
 }
 
 void GenSAMHub::snoop_power_(const Frame &frame) {
-  if ((frame.address != MULTICAST_ADDRESS && frame.address != BROADCAST_ADDRESS) ||
+  if (frame.address != BROADCAST_ADDRESS ||
       frame.command != CMD_WAKEUP || frame.payload.size() < 2 || frame.payload[0] != WAKEUP_OP_POWER) {
     return;
   }
 
-  bool is_standby = (frame.payload[1] == WAKEUP_VAL_STANDBY_1 || frame.payload[1] == WAKEUP_VAL_STANDBY_2);
+  // 0x00 is a short-press/toggle request, not a stable power state. The preceding 0x02
+  // request is GLM's explicit standby phase; F0 only reaches unassigned monitors.
+  bool is_standby = frame.payload[1] == WAKEUP_VAL_STANDBY_1;
   bool is_on = (frame.payload[1] == WAKEUP_VAL_ON_1 || frame.payload[1] == WAKEUP_VAL_ON_2);
   if (is_standby && !current_standby_) {
     current_standby_ = true;
@@ -101,12 +104,12 @@ void GenSAMHub::snoop_system_leds_(const Frame &frame) {
   } else {
     return;
   }
-  if (frame.address != MULTICAST_ADDRESS && frame.address != BROADCAST_ADDRESS &&
+  if (frame.address != BROADCAST_ADDRESS &&
       !is_monitor_address(frame.address)) {
     return;
   }
 
-  if (frame.address == MULTICAST_ADDRESS || frame.address == BROADCAST_ADDRESS) {
+  if (frame.address == BROADCAST_ADDRESS) {
     for (auto &kv : registry_.monitors()) {
       kv.second.system_leds_enabled = enabled;
       kv.second.system_leds_known = true;
@@ -117,8 +120,7 @@ void GenSAMHub::snoop_system_leds_(const Frame &frame) {
     mon.system_leds_known = true;
   }
 
-  bool all_known = !registry_.empty() ||
-                   frame.address == MULTICAST_ADDRESS || frame.address == BROADCAST_ADDRESS;
+  bool all_known = !registry_.empty() || frame.address == BROADCAST_ADDRESS;
   bool all_enabled = true;
   for (const auto &kv : registry_.monitors()) {
     if (!kv.second.system_leds_known) {
@@ -174,7 +176,7 @@ void GenSAMHub::snoop_mute_(const Frame &frame) {
     registry_.publish_mute(mon);
     ESP_LOGD(TAG, "[Sniffed] Discovered monitor 0x%02X mute set to %s (raw 0x%02X)",
              frame.address, YESNO(is_muted), frame.payload[0]);
-  } else if (frame.address == MULTICAST_ADDRESS || frame.address == BROADCAST_ADDRESS) {
+  } else if (frame.address == BROADCAST_ADDRESS) {
     for (auto &kv : registry_.monitors()) {
       registry_.set_mute(kv.second, is_muted);
     }
@@ -191,7 +193,7 @@ void GenSAMHub::snoop_crossover_(const Frame &frame) {
   char buf[CROSSOVER_STR_SIZE];
   crossover_to_str(freq, buf, sizeof(buf));
 
-  if (frame.address == MULTICAST_ADDRESS || frame.address == BROADCAST_ADDRESS) {
+  if (frame.address == BROADCAST_ADDRESS) {
     for (auto &kv : registry_.monitors()) {
       registry_.set_crossover(kv.second, freq);
     }
@@ -357,12 +359,40 @@ void GenSAMHub::snoop_dsp_(const Frame &frame) {
 }
 
 void GenSAMHub::snoop_host_reply_(const Frame &frame) {
-  if (frame.address != HOST_ADDRESS || last_queried_addr_ == 0) {
+  if (frame.address != HOST_ADDRESS) {
+    return;
+  }
+
+  if (frame.command == CMD_REPORT_STATUS && last_queried_cmd_ == 0 &&
+      telemetry_continuation_addr_ != 0 &&
+      millis() - telemetry_continuation_ms_ <= TELEMETRY_CONTINUATION_WINDOW_MS &&
+      !frame.payload.empty() && frame.payload[0] != 0x41) {
+    GenSAMMonitor *mon = registry_.find(telemetry_continuation_addr_);
+    telemetry_continuation_addr_ = 0;
+    if (mon != nullptr) {
+      parse_telemetry(frame.payload.data(), frame.payload.size(), *mon);
+      this->mark_monitor_seen_(*mon);
+      registry_.bind_if_matched(*mon);
+      registry_.publish_telemetry(*mon);
+      this->evaluate_system_standby_();
+    }
+    return;
+  }
+
+  if (last_queried_addr_ == 0) {
     return;
   }
 
   // Attribute the reply to the query snoop_addressing_ last saw go out on the bus.
   uint8_t queried_cmd = last_queried_cmd_;
+  if (queried_cmd != 0 &&
+      (frame.command == CMD_COMMAND_REJECTED || frame.command == CMD_UNSUPPORTED)) {
+    ESP_LOGW(TAG, "[Sniffed] Monitor 0x%02X rejected command 0x%02X (reply 0x%02X)",
+             last_queried_addr_, queried_cmd, frame.command);
+    last_queried_cmd_ = 0;
+    last_queried_dip_status_ = false;
+    return;
+  }
   if (queried_cmd == CMD_DIP_SWITCH) {
     if (!last_queried_dip_status_ ||
         (frame.command != CMD_DIP_SWITCH && frame.command != CMD_REPORT_STATUS) ||
@@ -393,6 +423,10 @@ void GenSAMHub::snoop_host_reply_(const Frame &frame) {
   }
 
   GenSAMMonitor &mon = registry_.get_or_create(last_queried_addr_);
+  if (queried_cmd == CMD_QUERY_STATUS) {
+    telemetry_continuation_addr_ = last_queried_addr_;
+    telemetry_continuation_ms_ = millis();
+  }
   switch (queried_cmd) {
     case CMD_SOFTWARE_QUERY:
       parse_device_info(frame.payload.data(), frame.payload.size(), mon);

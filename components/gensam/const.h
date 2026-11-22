@@ -28,6 +28,7 @@ static constexpr uint8_t ESCAPE_XOR = 0x20;       ///< XOR value for escaped byt
 
 static constexpr uint8_t NINTH_BIT_FLAG = 0x01;   ///< 9th bit = 1 for address
 static constexpr size_t MAX_FRAME_LENGTH = 256;   ///< Safety bound for frame buffer
+static constexpr uint32_t TELEMETRY_CONTINUATION_WINDOW_MS = 20; ///< Maximum telemetry continuation delay
 
 // --- Addressing -----------------------------------------------------------
 static constexpr uint8_t HOST_ADDRESS = 0x01;
@@ -44,6 +45,8 @@ static constexpr uint8_t CMD_STAY_ONLINE = 0x04;      ///< Keep-alive / stay onl
 static constexpr uint8_t CMD_SIGNAL_GEN = 0x05;       ///< Signal generator; see the block below
 static constexpr uint8_t CMD_QUERY_STATUS = 0x08;     ///< GLMv5 monitor telemetry query
 static constexpr uint8_t CMD_REPORT_STATUS = 0x09;    ///< GLMv5 monitor telemetry report
+static constexpr uint8_t CMD_COMMAND_REJECTED = 0x10; ///< Reply: command rejected
+static constexpr uint8_t CMD_UNSUPPORTED = 0x11;      ///< Reply: unsupported / invalid command
 static constexpr uint8_t CMD_VOLUME = 0x1F;           ///< Volume control (24-bit)
 static constexpr uint8_t CMD_BAR_CODE = 0x19;         ///< Serial number / barcode query
 static constexpr uint8_t CMD_SERVICE = 0x15;          ///< Service prefix: store / restore user settings
@@ -254,11 +257,9 @@ static constexpr uint16_t CROSSOVER_FULL_BAND = 0x0001;
 // --- Per-device level trim and time-of-flight delay ------------------------
 /// @name Level trim bounds
 ///
-/// The floor is what keeps the digital-silence sentinel out of reach. make_level() encodes
-/// anything at or below GENELEC_VOLUME_MIN_DB (-130 dB) as 0x000000, and a GLM setup file
-/// writes Calibration_Level: -999 for "not calibrated", so a value that leaks through would
-/// mute the speaker rather than trim it. -60 dB is far enough below any real AutoCal trim to
-/// be useful and far enough above the sentinel to be safe; the group schema picks it too.
+/// A GLM setup file writes Calibration_Level: -999 for "not calibrated", so a value that
+/// leaks through would mute the speaker rather than trim it. The -60 dB floor safely clamps
+/// that sentinel while remaining far below any real AutoCal trim; the group schema picks it too.
 ///
 /// The ceiling is unity. Level compensation is attenuation only: make_level() clamps positive
 /// decibels to 0 dB, so there is nothing above it to offer.
@@ -360,7 +361,7 @@ static constexpr uint8_t ISS_LED_DISABLED = 0x01;     ///< 0x3A 06 value: LEDs o
 static constexpr uint8_t WAKEUP_VAL_ON_1 = 0x7F;      ///< Power ON / Wakeup phase 1
 static constexpr uint8_t WAKEUP_VAL_ON_2 = 0x01;           ///< Power ON / Wakeup phase 2
 static constexpr uint8_t WAKEUP_VAL_STANDBY_1 = 0x02;      ///< Standby / Sleep phase 1 (prepare)
-static constexpr uint8_t WAKEUP_VAL_STANDBY_2 = 0x00;      ///< Standby / Sleep phase 2 (power off / sleep)
+static constexpr uint8_t WAKEUP_VAL_STANDBY_2 = 0x00;      ///< Short-press/toggle request, not stable power state
 
 // --- ISS sleep delay and sensitivity (CMD_WAKEUP 01 / 02) --------------------
 /// @name ISS settings

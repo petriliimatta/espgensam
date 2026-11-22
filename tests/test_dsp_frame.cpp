@@ -227,10 +227,10 @@ void test_volume_quantization() {
         "a negative level remains below unity even when pow rounds to one");
   check(esphome::gensam::volume_db_to_int24(0.0f) == 0x7FFFFF,
         "zero dB remains unity");
-  check(esphome::gensam::volume_db_to_int24(-130.0f) == 0,
-        "-130 dB retains the digital-silence cutoff");
-  check(esphome::gensam::volume_db_to_int24(std::nextafter(-130.0f, 0.0f)) == 2,
-        "the first float above the silence cutoff uses floor quantization");
+  check(esphome::gensam::volume_db_to_int24(-130.0f) == 2,
+        "-130 dB follows the specified floor formula");
+  check(esphome::gensam::volume_db_to_int24(-140.0f) == 0,
+        "gain below the representable floor quantizes to digital silence");
 
   check_wire("volume -20 dB uses the floor-quantized wire value",
              esphome::gensam::make_broadcast_volume_db(-20.0f),

@@ -171,7 +171,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   //   0x43: HF / tweeter channel output level (signed int8 dBFS)
   //   0x44: Midrange channel output level (3-way models; never yet observed)
   //   0x45: LF / woofer channel output level (signed int8 dBFS)
-  //   0x46: Subwoofer-only meter, exact meaning unresolved (signed int8 dBFS)
+  //   0x46: LFE input peak (subwoofer only), not a driver output meter
   //   0x47: Power State (0x01 = Active, 0x02 = Standby, 0x03 = transition, 0x04 = observed wake)
   //   0x49: Telemetry counter (1 byte, value unused)
   //   0x81 / 0x82 / 0x83: TW / MD / BS voice-coil temperature (00 [degC], modelled)
@@ -184,9 +184,8 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   // every single frame (164/164 with music playing) while 0x45 swings across 0x80-0xF1. Both are
   // active on a two-way. HLM reached the same assignment independently from a frequency sweep.
   //
-  // 0x46 is emitted only by the subwoofer, but it is not simply "the subwoofer's output": it has
-  // been seen dominating while 0x45 sat at the floor, and floored while 0x45 swung widely, in
-  // different sessions. Left deliberately vague rather than guessed at.
+  // 0x46 is the LFE input peak. It is parsed as a telemetry record but is not part of the
+  // post-volume/post-mute driver output peak reported by output_db.
   bool found_tag = false;
   bool found_output = false;
   int8_t max_output_db = -128;
@@ -200,7 +199,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
       monitor.input_db = static_cast<int8_t>(tlv_data[i + 1]);
       found_tag = true;
       i++;
-    } else if ((tag == 0x43 || tag == 0x44 || tag == 0x45 || tag == 0x46) && i + 1 < tlv_len) {
+    } else if ((tag == 0x43 || tag == 0x44 || tag == 0x45) && i + 1 < tlv_len) {
       // Per-channel output meters (see the tag table above). The monitor's overall output level
       // tracks the peak across whichever channels this model reports, so the individual
       // assignments do not affect it -- they matter only for reading the raw frames.
@@ -209,6 +208,9 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
         max_output_db = level;
       }
       found_output = true;
+      found_tag = true;
+      i++;
+    } else if (tag == 0x46 && i + 1 < tlv_len) {
       found_tag = true;
       i++;
     } else if (tag == 0x47 && i + 1 < tlv_len &&
@@ -255,6 +257,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
         default:
           break;
       }
+      found_tag = true;
       i += 2;
     }
   }

@@ -230,6 +230,8 @@ The system is exposed to Home Assistant as controls rather than a media player: 
 live front-LED state independently of the stored GLM ISS LED preference and the mute switch's
 red/off status indication. The switch remains unknown until each discovered monitor's LED state
 is observed or commanded; if the monitors disagree, it reports off (not all LEDs are enabled).
+The last known LED setting is reapplied after wake-up discovery and group changes without
+writing the speakers' stored GLM preferences.
 Group presets and calibration controls are available separately.
 
 In controller mode, boot wakes the monitors and restores the remembered volume and selected

@@ -18,8 +18,8 @@
 ///        vol_ratio = 10^(dB / 20.0)
 ///        sint24    = floor(vol_ratio * (2^23 - 1))
 ///      Use double-precision intermediates so float rounding cannot move the result across
-///      an integer boundary. At or below -130 dB the component instead sends digital silence;
-///      0 dB and above saturate at unity. Negative inputs stay below unity even when the ratio
+///      an integer boundary. 0 dB and above saturate at unity; values below the representable
+///      floor naturally quantize to zero. Negative inputs stay below unity even when the ratio
 ///      is too close to 1 to distinguish in double precision.
 ///
 /// 2. Wire Representation (Big-Endian):
@@ -69,11 +69,8 @@ inline float volume_int24_to_db(uint32_t val) {
 
 /// @brief Convert decibels (dBFS) to a Genelec 24-bit fixed-point integer.
 /// @param db Decibel level (<= 0.0 dBFS, or negative).
-/// @return Floor-quantized gain, or zero at/below -130 dB and unity at/above 0 dB.
+/// @return Floor-quantized gain, or zero below the representable floor and unity at/above 0 dB.
 inline uint32_t volume_db_to_int24(float db) {
-  if (db <= GENELEC_VOLUME_MIN_DB) {
-    return 0;
-  }
   if (db >= 0.0f) {
     return GENELEC_VOLUME_MAX_INT24;
   }

@@ -292,6 +292,10 @@ void GenSAMHub::broadcast_volume_and_keepalive_() {
 // --- Incoming replies to what the state machine sent --------------------------------
 
 bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
+  if (this->handle_command_rejection_(frame, now) ||
+      this->handle_poll_continuation_(frame, now)) {
+    return true;
+  }
   if (resuming_ && race_state_ == RaceState::SLEEPING) {
     // The late reply to a sleep probe that a wake request overtook; it only held the slot.
     if (current_query_addr_ == 0 || frame.address != HOST_ADDRESS) return false;
@@ -415,6 +419,8 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
       registry_.bind_if_matched(mon);
       registry_.publish_telemetry(mon);
       this->evaluate_system_standby_();
+      telemetry_continuation_addr_ = current_query_addr_;
+      telemetry_continuation_ms_ = now;
       if (frame.payload.size() == 1 && is_telemetry_marker(frame.payload[0])) {
         ESP_LOGD(TAG, "[0x%02X %s] Telemetry: marker-only reply (0x%02X); no fields reported",
                  current_query_addr_, mon.model.c_str(), frame.payload[0]);
@@ -819,11 +825,15 @@ void GenSAMHub::finish_group_apply_() {
   // means the next discovery re-applies, and re-publishing keeps the entity honest until it
   // does.
   const uint8_t attempted = apply_.group_idx;
-  const bool reached_anyone = apply_.configured > 0;
+  const bool reached_anyone = apply_.configured > 0 && !apply_.rejected;
+  const bool rejected = apply_.rejected;
   apply_ = GroupApplyState{};
 
   if (reached_anyone) {
     active_group_ = attempted;
+  } else if (rejected) {
+    ESP_LOGW(TAG, "Group preset '%s' was not marked active because a monitor rejected a command",
+             this->get_group(attempted) != nullptr ? this->get_group(attempted)->name : "?");
   } else {
     const GroupPreset *wanted = this->get_group(attempted);
     ESP_LOGW(TAG, "Group preset '%s' reached no monitors; leaving it unapplied",
@@ -1008,6 +1018,80 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
   this->finish_group_apply_();
 }
 
+bool GenSAMHub::handle_poll_continuation_(const Frame &frame, uint32_t now) {
+  if (race_state_ != RaceState::POLLING_MONITORS || current_query_addr_ != 0 ||
+      telemetry_continuation_addr_ == 0 ||
+      now - telemetry_continuation_ms_ > TELEMETRY_CONTINUATION_WINDOW_MS ||
+      frame.address != HOST_ADDRESS || frame.command != CMD_REPORT_STATUS ||
+      frame.payload.empty() || frame.payload[0] == 0x41) {
+    return false;
+  }
+
+  GenSAMMonitor *mon = registry_.find(telemetry_continuation_addr_);
+  telemetry_continuation_addr_ = 0;
+  if (mon == nullptr) {
+    return true;
+  }
+  parse_telemetry(frame.payload.data(), frame.payload.size(), *mon);
+  this->mark_monitor_seen_(*mon);
+  registry_.bind_if_matched(*mon);
+  registry_.publish_telemetry(*mon);
+  this->evaluate_system_standby_();
+  ESP_LOGD(TAG, "[0x%02X %s] Telemetry continuation received",
+           mon->address, mon->model.c_str());
+  return true;
+}
+
+bool GenSAMHub::handle_command_rejection_(const Frame &frame, uint32_t now) {
+  if (frame.address != HOST_ADDRESS ||
+      (frame.command != CMD_COMMAND_REJECTED && frame.command != CMD_UNSUPPORTED)) {
+    return false;
+  }
+
+  const char *reason = frame.command == CMD_COMMAND_REJECTED ? "rejected" : "unsupported/invalid";
+  switch (race_state_) {
+    case RaceState::QUERYING_DEVICES:
+      if (current_query_addr_ == 0) return false;
+      ESP_LOGW(TAG, "Monitor 0x%02X returned %s for query 0x%02X; skipping it",
+               current_query_addr_, reason, current_query_cmd_);
+      this->advance_device_query_();
+      race_step_time_ = now;
+      return true;
+    case RaceState::CONFIGURING_DEVICES:
+      if (current_query_addr_ == 0) return false;
+      ESP_LOGW(TAG, "Monitor 0x%02X returned %s during configuration (reply 0x%02X)",
+               current_query_addr_, reason, frame.command);
+      current_poll_index_++;
+      current_query_addr_ = 0;
+      race_step_time_ = now;
+      return true;
+    case RaceState::POLLING_MONITORS:
+      if (current_query_addr_ == 0) return false;
+      ESP_LOGW(TAG, "Monitor 0x%02X returned %s for poll/read (reply 0x%02X)",
+               current_query_addr_, reason, frame.command);
+      current_query_addr_ = 0;
+      iss_query_op_ = 0;
+      last_poll_step_time_ = now;
+      return true;
+    case RaceState::APPLYING_GROUP:
+      if (!apply_.active) return false;
+      apply_.rejected = true;
+      ESP_LOGW(TAG, "A monitor returned %s during group application (reply 0x%02X)",
+               reason, frame.command);
+      return true;
+    case RaceState::SLEEPING:
+      if (current_query_addr_ == 0) return false;
+      ESP_LOGW(TAG, "Monitor 0x%02X returned %s to the sleep probe (reply 0x%02X)",
+               current_query_addr_, reason, frame.command);
+      current_query_addr_ = 0;
+      sleep_probe_phase_ = SLEEP_PROBE_IDLE;
+      last_sleep_tx_ms_ = now;
+      return true;
+    default:
+      return false;
+  }
+}
+
 void GenSAMHub::race_step_polling_(uint32_t now) {
   // A group switch requested while polling starts here, between telemetry cycles, so a push
   // never interleaves with an outstanding poll.
@@ -1055,6 +1139,7 @@ void GenSAMHub::race_step_polling_(uint32_t now) {
   }
 
   if (current_poll_index_ < poll_addrs_.size()) {
+    telemetry_continuation_addr_ = 0;
     current_query_addr_ = poll_addrs_[current_poll_index_++];
     iss_query_op_ = 0;
     race_step_time_ = now;

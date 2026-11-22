@@ -121,6 +121,13 @@ void test_subwoofer_output_follows_active_channel() {
   check(m.standby_known && !m.standby, "subwoofer: ACTIVE");
 }
 
+void test_lfe_peak_is_not_driver_output() {
+  GenSAMMonitor m = parse({0x41, 0x18, 0x43, 0x80, 0x45, 0x80, 0x46, 0xE5, 0x47, 0x01});
+  check(m.output_db == static_cast<int8_t>(0x80),
+        "subwoofer: loud LFE input peak does not raise driver output meter");
+  check(m.standby_known && !m.standby, "subwoofer LFE peak: ACTIVE");
+}
+
 // --- The 0x47 paths the three capture files happen not to contain ------------------------------
 
 /// A genuine standby reply, observed live on 2026-09-20 with the system powered down: tag 47 02,
@@ -256,6 +263,19 @@ void test_supply_rails() {
   check(std::isnan(m.tw_coil_temperature), "rails: unreported TW coil stays NAN");
 }
 
+void test_extended_only_continuation_does_not_fall_back_to_fixed_offsets() {
+  GenSAMMonitor m;
+  m.temperature = 42;
+  m.input_db = -20;
+  const uint8_t bytes[] = {0x81, 0x00, 0x21, 0x83, 0x00, 0x22, 0x84, 0x02, 0xB3};
+  check(parse_telemetry(bytes, sizeof(bytes), m), "extended-only continuation is recognized");
+  check(m.temperature == 42 && m.input_db == -20,
+        "extended-only continuation does not overwrite unrelated fixed-offset meters");
+  check(m.tw_coil_temperature == 33.0f && m.bs_coil_temperature == 34.0f &&
+            std::fabs(m.processor_load - 69.1f) < 0.01f,
+        "extended-only continuation records are decoded");
+}
+
 }  // namespace
 
 int main() {
@@ -267,6 +287,7 @@ int main() {
   test_bare_07_is_not_standby();
   test_marker_is_transparent();
   test_subwoofer_output_follows_active_channel();
+  test_lfe_peak_is_not_driver_output();
   test_tag_47_standby();
   test_tag_47_standby_truncated();
   test_tag_47_transition();
@@ -277,6 +298,7 @@ int main() {
   test_coil_temperatures();
   test_processor_load();
   test_supply_rails();
+  test_extended_only_continuation_does_not_fall_back_to_fixed_offsets();
 
   if (failures != 0) {
     std::printf("\n%d check(s) FAILED\n", failures);

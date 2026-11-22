@@ -854,6 +854,9 @@ void GenSAMHub::set_phase_correction_bypass(bool bypass) {
 }
 
 void GenSAMHub::queue_runtime_settings_() {
+  if (system_led_state_known_) {
+    system_led_tx_pending_ = true;
+  }
   if (iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT || iss_threshold_ != ISS_THRESHOLD_DEFAULT) {
     iss_tx_pending_ = true;
   }

@@ -91,8 +91,12 @@
 ///
 ///    Instead the setters only *accept*: they record the latest target and return. Volume and
 ///    mute publish on acceptance; the monitor LED switch publishes only after its live command
-///    has gone out, or the state is snooped from GLM. loop() transmits requests
-///    when the bus is in a safe slot - polling or idle, no reply outstanding, TX available - at
+///    has gone out, or the state is snooped from GLM.
+///    The last known LED setting is re-queued after discovery and group pushes so a speaker
+///    restart on wake does not replace it with the stored GLM LED preference. Until a setting
+///    is known, discovery leaves the speakers' LED preference alone.
+///    loop() transmits requests when the bus is in a safe slot - polling or idle, no reply
+///    outstanding, TX available - at
 ///    most one item per loop() call. Volume additionally waits out standby and goes no more
 ///    often than `volume_tx_interval` (50 ms by default). Once frames are slotted, that cap no
 ///    longer protects telemetry; it only bounds bus, log and API churn. A volume frame is
@@ -236,6 +240,7 @@ struct GroupApplyState {
   uint32_t started_ms{0};      ///< millis() at entry, for the stall timeout.
   bool ducked{false};          ///< Whether volume was lowered and still needs restoring.
   uint8_t configured{0};       ///< Devices actually reached, as opposed to skipped offline.
+  bool rejected{false};        ///< At least one monitor rejected a group command.
 };
 
 /// @brief Hub component managing the 9-bit RS-485 physical bus, framing,
@@ -898,6 +903,10 @@ class GenSAMHub : public Component {
   /// @param now Current millis() timestamp.
   /// @return True if the frame was the expected reply and has been fully handled.
   bool handle_active_reply_(const Frame &frame, uint32_t now);
+  /// @brief Consume the second telemetry frame some monitors use to continue a long reply.
+  bool handle_poll_continuation_(const Frame &frame, uint32_t now);
+  /// @brief Handle explicit 0x10/0x11 replies to an outstanding unicast request.
+  bool handle_command_rejection_(const Frame &frame, uint32_t now);
 
   // --- Passive snooping (implemented in snoop.cpp) ---------------------------------
   //
@@ -1089,6 +1098,8 @@ class GenSAMHub : public Component {
   uint8_t last_queried_addr_{0};
   uint8_t last_queried_cmd_{0};
   bool last_queried_dip_status_{false};
+  uint8_t telemetry_continuation_addr_{0};
+  uint32_t telemetry_continuation_ms_{0};
 
   // Volume, mute, standby, and binding state
   float min_volume_db_{-80.0f};

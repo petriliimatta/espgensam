@@ -218,8 +218,9 @@ bool parse_barcode(const uint8_t *data, size_t len, GenSAMMonitor &monitor);
 
 /// @brief Parse status telemetry payload from CMD_REPORT_STATUS (0x09) or CMD_QUERY_STATUS (0x08).
 ///
-/// Supports modern tagged TLV streams (0x41 temp, 0x42 input, 0x43-0x46 channel outputs, 0x47 power state,
-/// 0x49 counter, 0x81-0x83 coil temperatures, 0x88/0x89 supply rails) as well as legacy fixed-offset RACE payloads.
+/// Supports modern tagged TLV streams (0x41 temp, 0x42 input, 0x43-0x45 channel outputs, 0x46 LFE input peak,
+/// 0x47 power state, 0x49 counter, 0x81-0x83 coil temperatures, 0x88/0x89 supply rails) as well as legacy
+/// fixed-offset RACE payloads.
 ///
 /// Tag 'G' (0x47) is the only field in a reply that reports power state. Values 0x01 (active) and
 /// 0x02 (standby) are stable; 0x03 (documented transition) and 0x04 (observed during wake) clear
