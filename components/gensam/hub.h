@@ -92,9 +92,12 @@
 ///    Instead the setters only *accept*: they record the latest target and return. Volume and
 ///    mute publish on acceptance; the monitor LED switch publishes only after its live command
 ///    has gone out, or the state is snooped from GLM.
-///    The last known LED setting is re-queued after discovery and group pushes so a speaker
-///    restart on wake does not replace it with the stored GLM LED preference. Until a setting
-///    is known, discovery leaves the speakers' LED preference alone.
+///    The last known LED setting is persisted on this device and restored at boot, because the
+///    live 0x2B state cannot be read back. It is re-queued after discovery and group pushes so a
+///    speaker restart on wake does not replace it with the stored GLM LED preference. Until a
+///    setting has ever been known, discovery leaves the speakers' LED preference alone.
+///    Mute and identify frames are 0x2B frames too, so they carry the live LED setting rather
+///    than re-enabling the LEDs.
 ///    loop() transmits requests when the bus is in a safe slot - polling or idle, no reply
 ///    outstanding, TX available - at
 ///    most one item per loop() call. Volume additionally waits out standby and goes no more
@@ -769,6 +772,22 @@ class GenSAMHub : public Component {
   /// @brief Persist the ISS overrides.
   void save_iss_state_();
 
+  /// @brief Load the last known monitor LED setting and publish it.
+  ///
+  /// The speakers have no readback for the live 0x2B LED state, so without this a reboot of
+  /// this device would leave the switch reporting off (ESPHome's default) over lit LEDs.
+  /// A restored setting counts as known, so queue_runtime_settings_() re-asserts it after
+  /// discovery and the speakers are brought back in line with what is shown.
+  void restore_system_led_state_();
+
+  /// @brief Record @p enabled as the setting the speakers now have, persist it and publish it.
+  void commit_system_led_state_(bool enabled);
+
+  /// @brief The live LED setting a 0x2B frame to @p mon must carry.
+  /// @param mon Target monitor, or nullptr for a broadcast.
+  /// @return The monitor's own observed setting, else the system's, else enabled.
+  bool live_leds_enabled_(const GenSAMMonitor *mon) const;
+
   /// @brief Broadcast current_volume_db_, satisfying any pending volume request.
   ///
   /// The only way the target volume reaches the bus: the flush, the poll-cycle rebroadcast and
@@ -1031,6 +1050,7 @@ class GenSAMHub : public Component {
   int selected_group_{-1};
   ESPPreferenceObject control_preference_;
   ESPPreferenceObject iss_preference_;  ///< Separate from control_preference_ so its layout can change alone.
+  ESPPreferenceObject system_led_preference_;
   bool yield_to_glm_{true};
   uint32_t glm_inactivity_cooldown_ms_{30000};
   uint32_t poll_interval_ms_{1000};

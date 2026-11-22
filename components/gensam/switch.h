@@ -29,6 +29,8 @@
 /// 4. Monitor LEDs (GenSAMSystemLEDSwitch):
 ///    Controls the live front-LED state using CMD_BYPASS (0x2B), independently of the stored ISS
 ///    LED preference. GLM's live 0x2B frames and stored 0x3A 06 frames both update the switch.
+///    The setting is persisted on this device and re-asserted after discovery, since the live
+///    state has no readback; until a setting has ever been known the switch shows off.
 ///
 /// 5. Bypass Calibration (GenSAMCalibrationBypassSwitch, GenSAMMonitorCalibrationBypassSwitch):
 ///    GLM's "Calibrated" button, which reads "Cal bypassed" while pressed. Its manual (GLM 5,

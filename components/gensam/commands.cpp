@@ -96,20 +96,21 @@ bool is_dip_switch_status_query(const Frame &frame) {
          frame.payload[0] == DIPSW_READ_STATUS;
 }
 
-Frame make_bypass(uint8_t addr, bool mute, bool pulsing) {
-  uint8_t val;
+Frame make_bypass(uint8_t addr, bool mute, bool pulsing, bool leds_enabled) {
+  uint8_t val = mute ? BYPASS_MUTE_MASK : 0x00;
   if (pulsing) {
     // Identify: pulse the LED with the color driver off, preserving the current mute bit.
-    val = (mute ? BYPASS_MUTE_MASK : 0x00) | (LED_OFF << 1) | BYPASS_LED_PULSING_MASK;
+    val |= (LED_OFF << 1) | BYPASS_LED_PULSING_MASK;
+  } else if (!leds_enabled) {
+    val |= BYPASS_LED_DISABLED_VALUE;
   } else {
-    val = mute ? (BYPASS_MUTE_MASK | (LED_RED << 1)) : (LED_OFF << 1);
+    val |= mute ? (LED_RED << 1) : BYPASS_LED_ENABLED_VALUE;
   }
   return Frame(addr, CMD_BYPASS, {val});
 }
 
 Frame make_bypass_led_state(uint8_t addr, bool mute, bool enabled) {
-  const uint8_t led_value = enabled ? BYPASS_LED_ENABLED_VALUE : BYPASS_LED_DISABLED_VALUE;
-  return Frame(addr, CMD_BYPASS, {static_cast<uint8_t>(led_value | (mute ? BYPASS_MUTE_MASK : 0x00))});
+  return make_bypass(addr, mute, /*pulsing=*/false, enabled);
 }
 
 Frame make_crossover(uint8_t addr, uint16_t freq_hz) {

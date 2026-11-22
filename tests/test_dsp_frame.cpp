@@ -46,7 +46,7 @@
 ///    sent twice: input 1 is the LFE channel, and the program input is narrowed off it.
 ///
 /// 6. A live-toggle capture confirms `2B 04` enables monitor LEDs and `2B 08` disables them;
-///    the mute bit is preserved. Storing the setting separately uses `3A 06` and `15 33 00`.
+///    the mute bit is preserved, and mute frames keep the live LED setting. Storing the setting separately uses `3A 06` and `15 33 00`.
 /// ===================================================================================
 
 #include "../components/gensam/commands.h"
@@ -125,8 +125,16 @@ void test_monitor_led_frames() {
         "live LED disable uses 0x2B 08");
 
   const Frame muted_live_on = esphome::gensam::make_bypass_led_state(0x02, true, true);
-  check(muted_live_on.payload == std::vector<uint8_t>({0x05}),
-        "live LED enable preserves the mute bit");
+  check(muted_live_on.payload == std::vector<uint8_t>({0x03}),
+        "live LED enable on a muted monitor keeps GLM's red mute presentation");
+
+  const Frame unmute_leds_off = esphome::gensam::make_bypass(0x02, false, false, false);
+  check(unmute_leds_off.payload == std::vector<uint8_t>({0x08}),
+        "unmute keeps live LEDs disabled");
+
+  const Frame mute_leds_off = esphome::gensam::make_bypass(0x02, true, false, false);
+  check(mute_leds_off.payload == std::vector<uint8_t>({0x09}),
+        "mute keeps live LEDs disabled");
 
   const Frame muted_live_off = esphome::gensam::make_bypass_led_state(0x03, true, false);
   check(muted_live_off.payload == std::vector<uint8_t>({0x09}),

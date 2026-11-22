@@ -877,7 +877,7 @@ bool GenSAMHub::send_group_step_(const GenSAMMonitor &mon, const GroupDevice &de
   // keep-alive is skipped along with the rest: one frame is not long enough to need it.
   if (!dev.enabled) {
     if (step == GROUP_STEP_KEEPALIVE) {
-      this->send_frame(make_bypass(addr, true));
+      this->send_frame(make_bypass(addr, true, false, this->live_leds_enabled_(&mon)));
       return true;
     }
     return false;

@@ -69,6 +69,11 @@ struct StoredIssState {
   int32_t threshold_dbu;
 };
 
+/// Persisted live monitor LED setting; only written once a setting is known.
+struct StoredSystemLedState {
+  uint8_t enabled;
+};
+
 }  // namespace
 
 void GenSAMHub::assert_output_pin_(int pin, bool active_high, bool pull_up,
@@ -132,6 +137,7 @@ void GenSAMHub::setup() {
   current_volume_db_ = startup_volume_db_;
   this->restore_control_state_();
   this->restore_iss_state_();
+  this->restore_system_led_state_();
   last_tx_volume_db_ = current_volume_db_;
   last_user_command_ms_ = millis();
   if (volume_number_ != nullptr) {
@@ -280,6 +286,42 @@ void GenSAMHub::save_iss_state_() {
   if (!iss_preference_.save(&state)) {
     ESP_LOGW(TAG, "Could not persist ISS settings");
   }
+}
+
+void GenSAMHub::restore_system_led_state_() {
+  system_led_preference_ = global_preferences->make_preference<StoredSystemLedState>(0x47534C33);
+  StoredSystemLedState state{};
+  if (!system_led_preference_.load(&state) || state.enabled > 1) {
+    return;
+  }
+  current_system_leds_enabled_ = last_tx_system_leds_enabled_ = state.enabled != 0;
+  system_led_state_known_ = true;
+  for (auto &callback : system_led_state_callbacks_) {
+    callback(current_system_leds_enabled_);
+  }
+  ESP_LOGD(TAG, "Restored monitor LED setting: %s", YESNO(current_system_leds_enabled_));
+}
+
+void GenSAMHub::commit_system_led_state_(bool enabled) {
+  const bool changed = !system_led_state_known_ || last_tx_system_leds_enabled_ != enabled;
+  last_tx_system_leds_enabled_ = enabled;
+  system_led_state_known_ = true;
+  if (changed) {
+    const StoredSystemLedState state{static_cast<uint8_t>(enabled ? 1 : 0)};
+    if (!system_led_preference_.save(&state)) {
+      ESP_LOGW(TAG, "Could not persist monitor LED setting");
+    }
+  }
+  for (auto &callback : system_led_state_callbacks_) {
+    callback(current_system_leds_enabled_);
+  }
+}
+
+bool GenSAMHub::live_leds_enabled_(const GenSAMMonitor *mon) const {
+  if (mon != nullptr && mon->system_leds_known) {
+    return mon->system_leds_enabled;
+  }
+  return system_led_state_known_ ? last_tx_system_leds_enabled_ : true;
 }
 
 bool GenSAMHub::accept_user_command_(bool hold_while_off) {
@@ -914,7 +956,7 @@ void GenSAMHub::transmit_group_mute_() {
 
   // 1. Unicast CMD_BYPASS to each discovered monitor individually (as per GLM protocol)
   for (const auto &kv : registry_.monitors()) {
-    bool sent = this->send_frame(make_bypass(kv.first, mute));
+    bool sent = this->send_frame(make_bypass(kv.first, mute, false, this->live_leds_enabled_(&kv.second)));
     transmitted = transmitted || sent;
     if (sent) {
       delayMicroseconds(250);
@@ -922,7 +964,9 @@ void GenSAMHub::transmit_group_mute_() {
   }
 
   // 2. Also send to BROADCAST_ADDRESS (0xFF)
-  transmitted = this->send_frame(make_bypass(BROADCAST_ADDRESS, mute)) || transmitted;
+  transmitted = this->send_frame(make_bypass(BROADCAST_ADDRESS, mute, false,
+                                             this->live_leds_enabled_(nullptr))) ||
+                transmitted;
 
   if (!transmitted) {
     ESP_LOGW(TAG, "Mute command was not transmitted; reverting to monitor state");
@@ -955,11 +999,7 @@ void GenSAMHub::transmit_system_leds_() {
 
   if (transmitted) {
     system_led_tx_pending_ = false;
-    last_tx_system_leds_enabled_ = enabled;
-    system_led_state_known_ = true;
-    for (auto &callback : system_led_state_callbacks_) {
-      callback(current_system_leds_enabled_);
-    }
+    this->commit_system_led_state_(enabled);
     ESP_LOGI(TAG, "Set live monitor LEDs %s across %zu monitors", YESNO(enabled), registry_.size());
   } else {
     ESP_LOGW(TAG, "Monitor LED setting was only partially transmitted; it will be retried");
@@ -1057,7 +1097,7 @@ void GenSAMHub::set_monitor_mute(uint8_t address, bool mute) {
     return;
   }
 
-  if (!this->send_frame_twice(make_bypass(address, mute))) {
+  if (!this->send_frame_twice(make_bypass(address, mute, false, this->live_leds_enabled_(mon)))) {
     ESP_LOGW(TAG, "Mute command to 0x%02X was not transmitted; keeping previous state", address);
     return;
   }
@@ -1498,7 +1538,7 @@ void GenSAMHub::check_identify_timeouts_() {
     if (!can_transmit()) {
       continue;
     }
-    Frame f = make_bypass(mon.address, mon.mute);
+    Frame f = make_bypass(mon.address, mon.mute, false, this->live_leds_enabled_(&mon));
     this->send_frame_twice(f);
     ESP_LOGI(TAG, "Identify completed on monitor 0x%02X (%s); restored steady LED (val 0x%02X)",
              mon.address, mon.model.c_str(), f.payload[0]);

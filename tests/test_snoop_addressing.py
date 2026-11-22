@@ -97,6 +97,11 @@ class GenSAMHub {
   void update_bus_status_() {}
   void evaluate_system_mute_() {}
   void mark_monitor_seen_(GenSAMMonitor &) {}
+  void commit_system_led_state_(bool enabled) {
+    last_tx_system_leds_enabled_ = enabled;
+    system_led_state_known_ = true;
+    for (auto &callback : system_led_state_callbacks_) callback(current_system_leds_enabled_);
+  }
   void snoop_power_(const Frame &frame);
   void snoop_system_leds_(const Frame &frame);
   void snoop_mute_(const Frame &frame);

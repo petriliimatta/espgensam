@@ -129,20 +129,24 @@ bool is_dip_switch_status_query(const Frame &frame);
 
 /// @brief Build a CMD_BYPASS (0x2B) mute and front-LED control frame.
 ///
-/// Two distinct LED presentations are encoded, matching GLM behaviour:
-/// - Steady (@p pulsing false): muted shows LED_RED, unmuted shows LED_OFF.
-/// - Identify (@p pulsing true): LED_OFF with the pulsing bit set, mute state preserved.
+/// Every 0x2B frame also sets the live front-LED state, so a mute frame that ignored it would
+/// silently re-light LEDs the user had switched off. The encodings, matching GLM behaviour:
+/// - Steady, LEDs enabled: muted shows LED_RED (0x03), unmuted shows LED_OFF (0x04).
+/// - Steady, LEDs disabled: 0x08, with the mute bit preserved (0x09 when muted).
+/// - Identify (@p pulsing true): LED_OFF with the pulsing bit set, mute state preserved; it
+///   overrides @p leds_enabled, since a speaker that cannot be seen cannot be identified.
 /// @param addr Target address; may be a monitor, MULTICAST_ADDRESS, or BROADCAST_ADDRESS.
 /// @param mute True to mute the channel.
 /// @param pulsing True to pulse the front LED for physical identification.
+/// @param leds_enabled The live monitor-LED setting the steady presentation must keep.
 /// @return CMD_BYPASS frame carrying the packed control byte.
-Frame make_bypass(uint8_t addr, bool mute, bool pulsing = false);
+Frame make_bypass(uint8_t addr, bool mute, bool pulsing = false, bool leds_enabled = true);
 
 /// @brief Build a live monitor LED enable/disable frame (CMD_BYPASS 0x2B).
 /// @param addr Target monitor address.
 /// @param mute Current mute state, preserved in bit 0.
 /// @param enabled True to enable the LED, false to disable it.
-/// @return CMD_BYPASS frame carrying 0x04 (enabled) or 0x08 (disabled), with the mute bit preserved.
+/// @return The steady make_bypass() frame: 0x04 / 0x03 (enabled), 0x08 / 0x09 (disabled).
 Frame make_bypass_led_state(uint8_t addr, bool mute, bool enabled);
 
 /// @brief Build a bass management crossover frame (CMD_BASS_MANAGE_XO 0x3B).

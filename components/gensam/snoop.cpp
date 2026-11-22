@@ -120,21 +120,13 @@ void GenSAMHub::snoop_system_leds_(const Frame &frame) {
   if (system_led_tx_pending_) {
     if (observed_enabled == current_system_leds_enabled_) {
       system_led_tx_pending_ = false;
-      last_tx_system_leds_enabled_ = observed_enabled;
-      system_led_state_known_ = true;
-      for (auto &callback : system_led_state_callbacks_) {
-        callback(current_system_leds_enabled_);
-      }
+      this->commit_system_led_state_(observed_enabled);
     }
     return;
   }
 
   current_system_leds_enabled_ = observed_enabled;
-  last_tx_system_leds_enabled_ = observed_enabled;
-  system_led_state_known_ = true;
-  for (auto &callback : system_led_state_callbacks_) {
-    callback(current_system_leds_enabled_);
-  }
+  this->commit_system_led_state_(observed_enabled);
   ESP_LOGI(TAG, "[Sniffed] Live monitor LEDs %s", current_system_leds_enabled_ ? "enabled" : "disabled");
 }
 
