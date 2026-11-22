@@ -421,7 +421,8 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
       } else {
         ESP_LOGI(TAG, "[0x%02X %s] Telemetry: %s Temp=%d°C In=%d dBFS Out=%d dBFS",
                  current_query_addr_, mon.model.c_str(),
-                 mon.standby_known ? (mon.standby ? "STANDBY" : "ACTIVE") : "UNKNOWN",
+                 mon.standby_transition ? "TRANSITION" :
+                     (mon.standby_known ? (mon.standby ? "STANDBY" : "ACTIVE") : "UNKNOWN"),
                  (int)mon.temperature, (int)mon.input_db, (int)mon.output_db);
       }
       current_query_addr_ = 0;

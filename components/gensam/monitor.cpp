@@ -160,9 +160,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   }
 
   // A marker on its own is the whole payload: the monitor answered, but reported nothing this
-  // round. Update no fields. standby_known in particular is sticky -- nothing ever clears it --
-  // so arming it here would enrol this monitor in MonitorRegistry::all_online_in_standby() for
-  // the rest of the session on the strength of a byte that carries no power information.
+  // round. Update no fields, especially standby_known: a marker carries no power information.
   if (tlv_len == 0) {
     return false;
   }
@@ -174,7 +172,7 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   //   0x44: Midrange channel output level (3-way models; never yet observed)
   //   0x45: LF / woofer channel output level (signed int8 dBFS)
   //   0x46: Subwoofer-only meter, exact meaning unresolved (signed int8 dBFS)
-  //   0x47: Power State (0x01 = Active, 0x02 = Standby / ISS)
+  //   0x47: Power State (0x01 = Active, 0x02 = Standby, 0x03 = transition, 0x04 = observed wake)
   //   0x49: Telemetry counter (1 byte, value unused)
   //   0x81 / 0x82 / 0x83: TW / MD / BS voice-coil temperature (00 [degC], modelled)
   //   0x84: processor load, 16 bits in per mille
@@ -214,17 +212,14 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
       found_tag = true;
       i++;
     } else if (tag == 0x47 && i + 1 < tlv_len &&
-               (tlv_data[i + 1] == 0x01 || tlv_data[i + 1] == 0x02)) {
-      // 'G' = Power state, and the sole authority on it (0x01 = Active, 0x02 = Standby / ISS).
-      //
-      // The operand is validated in the branch condition rather than the body because this loop
-      // is a scan, not a length-driven parse: a 0x47 that is really someone else's operand (a
-      // temperature of 71 degC, say) can reach here. Rejecting it in the condition means it is
-      // treated as the coincidental data byte it almost certainly is -- no byte consumed, no
-      // found_tag, no suppression of the Format A fallback -- rather than arming standby_known,
-      // which is sticky and would make this monitor a permanent standby voter.
-      monitor.standby = (tlv_data[i + 1] == 0x02);
-      monitor.standby_known = true;
+               tlv_data[i + 1] >= 0x01 && tlv_data[i + 1] <= 0x04) {
+      // 0x04 was observed during wake on 8351B; its precise meaning is not documented.
+      const uint8_t power = tlv_data[i + 1];
+      monitor.standby_transition = power >= 0x03;
+      monitor.standby_known = !monitor.standby_transition;
+      if (monitor.standby_known) {
+        monitor.standby = power == 0x02;
+      }
       found_tag = true;
       i++;
     } else if (tag == 0x49 && i + 1 < tlv_len) {

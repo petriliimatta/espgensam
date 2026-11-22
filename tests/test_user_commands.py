@@ -34,6 +34,7 @@ def main():
     ))
     methods += method(race, "void GenSAMHub::update_race_state_machine_()")
     methods += method(registry, "void MonitorRegistry::publish_stale_telemetry()")
+    methods += method(registry, "bool MonitorRegistry::all_online_in_standby(")
     reply = method(race, "bool GenSAMHub::handle_active_reply_(")
     reply = reply[:reply.index("\n  switch")] + "\n  return false;\n}\n"
     cpp = r'''
@@ -89,8 +90,13 @@ struct GenSAMMonitorBinding {
 };
 class MonitorRegistry {
  public:
+  struct PowerMonitor {
+    bool online = false, standby = false, standby_known = false, standby_transition = false;
+  };
   std::vector<GenSAMMonitorBinding> bindings_;
+  std::map<uint8_t, PowerMonitor> monitors_;
   void publish_stale_telemetry();
+  bool all_online_in_standby(bool &any_reported) const;
 };
 struct Frame {
   int address = HOST_ADDRESS, command = CMD_REPORT_STATUS;
@@ -102,6 +108,10 @@ struct Monitor {
   uint32_t identify_end_ms = 0, last_seen_ms = 0;
 };
 void parse_telemetry(const uint8_t *data, size_t size, Monitor &mon) {
+  if (size == 2 && data[0] == 0x47 && (data[1] == 0x03 || data[1] == 0x04)) {
+    mon.standby_known = false;
+    return;
+  }
   mon.standby_known = size != 0;
   if (size) mon.standby = data[0] != 0;
 }
@@ -322,6 +332,24 @@ int main() {
          std::isnan(output_level.state) && std::isnan(coil.state));
   assert(!online.has_state && online.invalidations == 1);
 
+  // A transition must not be excluded so that another speaker alone decides system power.
+  registry.monitors_[1] = {true, true, true, false};
+  registry.monitors_[2] = {true, false, false, true};
+  bool any_power = true;
+  registry.all_online_in_standby(any_power);
+  assert(!any_power);
+  registry.monitors_[1].standby = false;
+  registry.all_online_in_standby(any_power);
+  assert(!any_power);
+  registry.monitors_[2].online = false;
+  assert(!registry.all_online_in_standby(any_power) && any_power);
+  registry.monitors_[1].standby = true;
+  assert(registry.all_online_in_standby(any_power) && any_power);
+  registry.monitors_[2] = {true, false, false, false};
+  assert(registry.all_online_in_standby(any_power) && any_power);
+  registry.monitors_[1].standby = false;
+  assert(!registry.all_online_in_standby(any_power) && any_power);
+
   GenSAMHub commands;
   commands.bus_silent_ = true;
   int applied = 0;
@@ -350,6 +378,15 @@ int main() {
   assert(missing.handle_active_reply_(incomplete, 10));
   tick(missing, 309); assert(missing.discoveries == 0);
   tick(missing, 310); assert(missing.discoveries == 1);
+  GenSAMHub transitioning;
+  transitioning.bus_silent_ = true;
+  assert(transitioning.accept_user_command_());
+  tick(transitioning, 10);
+  Frame transition; transition.payload = {0x47, 0x03};
+  assert(transitioning.handle_active_reply_(transition, 10));
+  assert(transitioning.current_query_addr_ == 12 && transitioning.resuming_);
+  tick(transitioning, 309); assert(transitioning.discoveries == 0);
+  tick(transitioning, 310); assert(transitioning.discoveries == 1);
 
   // Hub-managed sleep: volume/mute wait for the wake; anything else wakes and rediscovers,
   // but only once the outstanding probe reply is in or has timed out.

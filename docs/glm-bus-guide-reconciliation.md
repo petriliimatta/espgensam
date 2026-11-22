@@ -157,6 +157,9 @@ of the hub's own sleep policy (`hub.h` section 8):
   toggles them back awake.
 - **Polling wakes a sleeping speaker.** A sleeping speaker still answers frames, but an `08`
   status query or keep-alive wakes it (`47 04` for about 10 s, then a restart).
+  The hub treats `47 04` as non-stable, alongside the manual's `47 03` transition; its precise
+  meaning is unconfirmed. System power stays at its last state until transitioning online
+  monitors report a stable state or go offline.
   `F0 02 [UID] [RID]` (set RID) and `3A 83` do not, so the hub uses that pair as its probe.
   A session lapses about 2.6 s after the last frame, so each probe re-assigns the RID first.
   The lapse timer restarts on any valid frame, broadcasts included, so discovery must not

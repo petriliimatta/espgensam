@@ -218,8 +218,9 @@ class MonitorRegistry {
   /// @brief Determine whether every online monitor that reports a power state is in standby.
   ///
   /// Monitors that have never reported one are ignored: Format A telemetry carries no power
-  /// field, and not every TLV reply includes the 'G' tag.
-  /// @param[out] any_reported Set to true if at least one online monitor has reported its power state.
+  /// field, and not every TLV reply includes the 'G' tag. If an online monitor is transitioning,
+  /// no system-level conclusion is available until it reports a stable state or goes offline.
+  /// @param[out] any_reported True if a stable conclusion can be made from online monitors.
   /// @return True if all such monitors are in standby (meaningless when @p any_reported is false).
   bool all_online_in_standby(bool &any_reported) const;
 

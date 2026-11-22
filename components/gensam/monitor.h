@@ -165,8 +165,9 @@ struct GenSAMMonitor {
   bool mute{false};                 ///< Channel mute state (CMD_BYPASS bit 0).
   bool system_leds_enabled{true};    ///< Front LED state, when system_leds_known is true.
   bool system_leds_known{false};     ///< True once a live or stored LED setting was observed.
-  bool standby{true};                ///< Amplifier standby state; only meaningful when standby_known is true.
-  bool standby_known{false};        ///< True once the monitor has actually reported its power state.
+  bool standby{true};                ///< Last stable standby state; current only when standby_known is true.
+  bool standby_known{false};        ///< True if the monitor's latest power report is active or standby.
+  bool standby_transition{false};   ///< True while the latest power report is a non-stable transition.
   bool online{false};               ///< Whether the monitor is currently responsive to bus traffic.
   int32_t iss_level_dbu{ISS_LEVEL_SILENCE};  ///< Last 3A 84 input level read; ISS_LEVEL_SILENCE = none.
   bool iss_level_known{false};       ///< True once a 3A 84 reply has been received.
@@ -220,8 +221,10 @@ bool parse_barcode(const uint8_t *data, size_t len, GenSAMMonitor &monitor);
 /// Supports modern tagged TLV streams (0x41 temp, 0x42 input, 0x43-0x46 channel outputs, 0x47 power state,
 /// 0x49 counter, 0x81-0x83 coil temperatures, 0x88/0x89 supply rails) as well as legacy fixed-offset RACE payloads.
 ///
-/// Tag 'G' (0x47) is the only field in a reply that reports power state, and only its documented
-/// values 0x01 (active) and 0x02 (standby) are accepted. A reply may also carry a 0x06/0x07 marker byte
+/// Tag 'G' (0x47) is the only field in a reply that reports power state. Values 0x01 (active) and
+/// 0x02 (standby) are stable; 0x03 (documented transition) and 0x04 (observed during wake) clear
+/// standby_known and set standby_transition until another stable report arrives. A reply may
+/// also carry a 0x06/0x07 marker byte
 /// at either end, or as its entire payload; see is_telemetry_marker() in const.h for what that byte is
 /// and is not. Markers are stripped or skipped and never affect standby. A marker-only payload means the
 /// monitor answered without reporting anything, and updates no fields.

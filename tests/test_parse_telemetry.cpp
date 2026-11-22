@@ -14,7 +14,7 @@
 /// ===================================================================================
 /// WHAT THIS PINS DOWN
 /// ===================================================================================
-/// Every payload below is a verbatim frame from captures/, cited by file and line. They exist
+/// The marker payloads below are verbatim frames from captures/, cited by file and line. They exist
 /// because an earlier release read a leading 0x07 as "monitor is in standby", set standby from
 /// it, and then blocked tag 0x47 from correcting that. Every one of these frames reports tag
 /// 0x47 = 0x01, ACTIVE, so that reading inverted the truth on real traffic -- and a false
@@ -23,8 +23,7 @@
 ///
 /// The marker cases are therefore the point of the file. The cases at the end cover the two
 /// 0x47 paths the three capture files happen not to contain: a genuine standby report, and a
-/// coincidental 0x47 data byte that must not be allowed to arm standby_known -- that flag is
-/// sticky and never cleared.
+/// coincidental 0x47 data byte that must not be allowed to arm standby_known.
 /// ===================================================================================
 
 #include "../components/gensam/monitor.h"
@@ -93,7 +92,7 @@ void test_bare_marker_touches_nothing() {
   bool returned = true;
   GenSAMMonitor m = parse({0x06}, &returned);
   check(!returned, "bare 06: reports nothing parsed");
-  check(!m.standby_known, "bare 06: does not arm standby_known (it is sticky forever)");
+  check(!m.standby_known, "bare 06: does not arm standby_known");
   check(m.standby == before.standby, "bare 06: leaves standby untouched");
   check(m.temperature == before.temperature, "bare 06: leaves temperature untouched");
 }
@@ -142,8 +141,45 @@ void test_tag_47_standby_truncated() {
   check(m.standby_known && m.standby, "tag 47 02 truncated: STANDBY still reported");
 }
 
-/// A 0x47 carrying neither 0x01 nor 0x02 is a desynced data byte, not a power report, and must
-/// not arm a permanent standby vote.
+void test_tag_47_transition() {
+  for (uint8_t transition : {uint8_t{0x03}, uint8_t{0x04}}) {
+    for (bool previous_standby : {false, true}) {
+      GenSAMMonitor m;
+      m.standby = previous_standby;
+      m.standby_known = true;
+      const uint8_t data[] = {0x41, 0x2A, 0x47, transition, 0x49, 0x41, 0x84, 0x02, 0xB3};
+      check(parse_telemetry(data, sizeof(data), m), "transition: recognized telemetry");
+      check(m.standby_transition && !m.standby_known && m.standby == previous_standby,
+            "transition: previous stable state is not treated as current");
+      check(m.temperature == 42 && std::fabs(m.processor_load - 69.1f) < 0.01f,
+            "transition: following telemetry stays aligned");
+
+      const uint8_t no_power[] = {0x41, 0x2B};
+      parse_telemetry(no_power, sizeof(no_power), m);
+      check(m.standby_transition && !m.standby_known,
+            "transition: reply without a power tag does not clear it");
+      const uint8_t marker[] = {0x06};
+      parse_telemetry(marker, sizeof(marker), m);
+      check(m.standby_transition && !m.standby_known,
+            "transition: marker-only reply does not clear it");
+
+      const uint8_t settled[] = {0x47, static_cast<uint8_t>(previous_standby ? 0x01 : 0x02)};
+      check(parse_telemetry(settled, sizeof(settled), m) &&
+                !m.standby_transition && m.standby_known && m.standby != previous_standby,
+            "transition: later stable state is accepted");
+    }
+  }
+  GenSAMMonitor first = parse({0x47, 0x03});
+  check(first.standby_transition && !first.standby_known,
+        "transition: first power report is not a stable vote");
+  GenSAMMonitor waking = parse({0x41, 0x2E, 0x47, 0x04, 0x49, 0x33,
+                                0x88, 0x00, 0x51, 0x89, 0x00, 0x3A, 0x84, 0x03, 0xAC});
+  check(waking.standby_transition && !waking.standby_known && waking.temperature == 46 &&
+            std::fabs(waking.processor_load - 94.0f) < 0.01f,
+        "transition: captured 8351B wake telemetry is parsed");
+}
+
+/// A 0x47 carrying an unsupported value must not arm a standby vote.
 void test_tag_47_invalid_operand_ignored() {
   GenSAMMonitor m = parse({0x41, 0x1A, 0x47, 0x99});
   check(!m.standby_known, "stray 47: operand 0x99 does not arm standby_known");
@@ -233,6 +269,7 @@ int main() {
   test_subwoofer_output_follows_active_channel();
   test_tag_47_standby();
   test_tag_47_standby_truncated();
+  test_tag_47_transition();
   test_tag_47_invalid_operand_ignored();
   test_format_a_unshifted();
   test_counter_operand_is_consumed();

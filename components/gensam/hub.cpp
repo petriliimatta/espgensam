@@ -709,7 +709,7 @@ void GenSAMHub::evaluate_system_standby_() {
   bool any_reported = false;
   bool all_standby = registry_.all_online_in_standby(any_reported);
   if (!any_reported) {
-    return;  // Nothing on the bus reports a power state; leave the commanded state alone
+    return;  // No stable system conclusion, or a monitor is transitioning
   }
 
   if (current_standby_ != all_standby) {

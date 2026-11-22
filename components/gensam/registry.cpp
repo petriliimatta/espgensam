@@ -421,6 +421,10 @@ bool MonitorRegistry::all_online_in_standby(bool &any_reported) const {
   any_reported = false;
   bool all_standby = true;
   for (const auto &kv : monitors_) {
+    if (kv.second.online && kv.second.standby_transition) {
+      any_reported = false;
+      return false;
+    }
     // Monitors that never reported a power state say nothing about it; a Format A telemetry
     // reply carries no power field at all, and not every TLV reply includes the 'G' tag.
     if (!kv.second.online || !kv.second.standby_known) {
@@ -429,7 +433,6 @@ bool MonitorRegistry::all_online_in_standby(bool &any_reported) const {
     any_reported = true;
     if (!kv.second.standby) {
       all_standby = false;
-      break;
     }
   }
   return all_standby;
