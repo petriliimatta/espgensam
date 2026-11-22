@@ -3,11 +3,11 @@
 /// @file sam_runtime.h
 /// @brief Bounded, owned runtime representation of GLM 5 setup files.
 ///
-/// The importer implements the sam_import.py mapping without depending on ESPHome or a
-/// transport, so it can be tested on a host. ThreewayGen2 imports additionally preserve their
+/// This is the only .sam importer. It does not depend on ESPHome or a transport, so it can be
+/// tested on a host. ThreewayGen2 imports additionally preserve their
 /// 96 kHz filter design rate. Presets own all strings and bands; the immutable GroupPreset
 /// views remain valid until the owning object is destroyed. Setup files are interpreted as
-/// UTF-8 when valid, otherwise as Latin-1, matching the build-time importer.
+/// UTF-8 when valid, otherwise as Latin-1, since older GLM exports are Latin-1.
 
 #include "groups.h"
 

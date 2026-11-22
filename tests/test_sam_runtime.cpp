@@ -112,6 +112,22 @@ int main(int argc, char **argv) {
   assert(presets.groups()[0].devices[0].delay_samples == 41 && warnings.size() == 1);
   assert(!parse_sam_runtime(replace(sam, "Phase(degrees)", "Time-of-flight_Compensation:-1\nPhase(degrees)"),
                             presets, warnings, error));
+  assert(parse_sam_runtime(replace(sam, "Phase(degrees):-165", "Phase(degrees):45"), presets, warnings, error));
+  assert(presets.groups()[0].devices[0].delay_samples == 67);
+  // The 9320 controller block reuses group-level keys; a leak would show as a 999 Hz crossover.
+  assert(parse_sam_runtime(replace(sam, "Group_Nodes:1",
+                                   "9320DATA:\nSerial:999\nGroup_Crossover:999\nVideo_Delay:7\nGroup_Nodes:1"),
+                           presets, warnings, error));
+  assert(presets.groups()[0].device_count == 1 && presets.groups()[0].devices[0].crossover_hz == 90);
+  assert(presets.groups()[0].devices[0].delay_samples == 289 && warnings.empty());
+  assert(parse_sam_runtime(replace(sam, "Group_ON:1", "Group_ON:1\nOptional_Gain:6"), presets, warnings, error));
+  assert(warnings.size() == 1 && warnings[0].find("Optional_Gain") != std::string::npos);
+  assert(parse_sam_runtime(replace(sam, "LFE_Level:-2", "LFE_Level:-2.5"), presets, warnings, error));
+  assert(warnings.size() == 1);
+  assert(parse_sam_runtime(replace(sam + other_group, "Serial:123\nGroup_ON", "Serial:abc\nGroup_ON"),
+                           presets, warnings, error));
+  assert(presets.groups().size() == 1 && presets.groups()[0].devices[0].unique_id == 999 &&
+         warnings.size() == 2);
   auto twoway = replace(sam, "Class:SubwooferGen2", "Class:TwowayGen2");
   twoway = replace(twoway, "SR:12000", "SR:48000");
   twoway = replace(twoway, "Notch:1", "LP_Shelve:1\nFrequency:80\nGain:-1\nSR:48000\n"

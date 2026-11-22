@@ -183,8 +183,8 @@ static constexpr uint8_t VOLUME_PAYLOAD_SILENCE[3] = {0x00, 0x00, 0x02};
 ///    0.0 dB, nowhere near that setup's global -20 dB volume limit. It is not purely
 ///    per-device, though: a later capture of a group carrying Group_Sensitivity:-0.3 over
 ///    Level_Sensitivity:0 put -0.3 dB on the wire to every speaker, so the field is the **sum
-///    of the device's own calibration trim and the group's offset**, and sam_import.py adds
-///    the two for that reason.
+///    of the device's own calibration trim and the group's offset**, and the .sam importer
+///    adds the two for that reason.
 ///    Sub-command 0x09 is emitted by GLM on every device with a constant 0x000000 payload,
 ///    and this component does not send it. The firmware reads it as the level in 0.1 dB steps
 ///    (the GLM bus decoding guide v3.0, section 11.1); what GLM means by zeroing it in every

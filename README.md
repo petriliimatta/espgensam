@@ -308,7 +308,7 @@ groups, upload a new `.sam` file on the [upload page](http://espgensam.local/upl
 and save and restart. A new upload always selects its first group; subsequent selections are
 remembered across ESP restarts for that stored setup. This does not write speaker flash.
 
-Groups can also be compiled from `sam_file:` or written by hand for programmatic use, but the
+Groups can also be written by hand in YAML for programmatic use, but the
 runtime selector does not list them and YAML no longer sets a startup default. Remove
 `default_group:` from existing configurations; select the desired group after upload instead.
 
@@ -376,71 +376,30 @@ configuration entity. On the device web page it sits in that speaker's card with
 and calibration settings; the page places volume, mute, power,
 calibration bypass and rediscovery in **System Controls**, with group selection in its own section.
 
-### 4. Importing an existing GLM setup (`gensam: sam_file:`)
+### 4. Importing an existing GLM setup
 
-Point the hub at a GLM 5 `.sam` setup file and its groups become presets, so an existing AutoCal
-calibration does not have to be retyped:
+Upload a GLM 5 `.sam` setup file from `http://<device-ip>/upload` and its groups become presets,
+so an existing AutoCal calibration does not have to be retyped. Validate, choose the startup
+group, then save and restart; no rebuild is needed. The first install after enabling uploads
+must be over USB to install the runtime storage partitions.
 
-```yaml
-gensam:
-  sam_file: "My Setup.sam"
-```
+The upload retains every valid device in the file, including speakers that are not configured
+or currently online, and applies settings to matching speakers as they are discovered on the
+bus. Setup files are read as UTF-8, falling back to Latin-1 for older files. Each speaker's SAM
+`Name` is published as a per-monitor **SAM Name** diagnostic entity, matched by hardware ID;
+the numbered monitor entity slots remain stable even when speakers are renamed or discovered in
+a different order.
 
-The file is read while ESPHome validates the configuration, which happens on every
-`esphome config`, `compile` and `run`. Re-run calibration, save in GLM, rebuild: there is nothing
-to regenerate and no converted file to keep in step. `esphome config` prints the groups in
-full, which is how you see what was imported.
-
-Presets appear in the order the setup file lists them, before any you also wrote in `groups:`.
-The **Group Preset** selector lists only groups from the uploaded setup; YAML groups have no
-startup default.
-
-With no static `monitors:` filter, every device in the file is imported, including speakers that
-are currently offline. If a filter is configured, `sam_file:` imports only the listed monitors.
-The local-development config instead uses the runtime uploader, which keeps group device IDs
-independent of the fixed Home Assistant slots and applies settings to matching speakers
-discovered on the bus.
+A speaker's `Time-of-flight_Compensation` becomes its delay, and a subwoofer's AutoPhase angle
+becomes the delay that realises it at the crossover. If a speaker has both, only the time of
+flight is applied, because how GLM combines them has not been captured.
 
 Anything the import cannot carry across is reported rather than dropped quietly. Pay attention
 to those warnings: they are the difference between the group sounding as GLM calibrated it,
 and sounding off.
 
-Alternatively, upload a `.sam` at runtime from `http://<device-ip>/upload` without rebuilding.
-Runtime upload does not use a static `monitors:` filter: it retains all valid devices, including
-those not configured or currently online, and applies settings to matching speakers as they are
-discovered. The first install after enabling uploads must be over USB to install the runtime
-storage partitions. Both import methods read UTF-8 setup files and fall back to Latin-1 for older
-files. Runtime uploads also publish each speaker's SAM `Name` as a
-per-monitor **SAM Name** diagnostic entity, matched by hardware ID; the numbered monitor entity
-slots remain stable even when speakers are renamed or discovered in a different order.
-
-#### Where the file lives
-
-The path is relative to the directory holding your ESPHome YAML, but `~` is expanded and an
-absolute path is taken as given, so it can point straight at GLM's own setup directory:
-
-```yaml
-  sam_file: "glm/My Setup.sam"
-  sam_file: "~/Documents/Genelec/GLM5/Setup Files/My Setup.sam"
-```
-
-Building from the ESPHome dashboard or the Home Assistant add-on needs the `.sam` copied into
-the configuration directory instead. GLM setup names usually contain spaces, so quote them.
-
-#### If you would rather have the YAML
-
-`tools/sam2yaml.py` runs the same conversion and writes the groups file out, which is the way
-to inspect it, diff two GLM exports, or correct a file the component will not accept:
-
-```bash
-python3 tools/sam2yaml.py "My Setup.sam" \
-    --monitors 1842915,1654321,1987654 \
-    -o gensam_groups.yaml
-```
-
-`--monitors` does by hand what `monitors:` does automatically. Include the result with
-`groups: !include gensam_groups.yaml` and leave `sam_file:` out. The tool needs PyYAML; if your
-system Python lacks it, `pip install pyyaml`, or run it with ESPHome's own interpreter.
+The build-time `sam_file:` option and `tools/sam2yaml.py` have been removed; remove
+`sam_file:` from existing configurations and upload the file instead.
 
 ---
 

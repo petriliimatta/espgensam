@@ -1,6 +1,5 @@
 import copy
 import hashlib
-import logging
 
 import esphome.codegen as cg
 import esphome.config_validation as cv
@@ -34,10 +33,6 @@ from esphome.const import (
 )
 from esphome.core import CORE
 from esphome.core.config import Device
-
-from . import sam_import
-
-_LOGGER = logging.getLogger(__name__)
 
 AUTO_LOAD = [
     "sensor",
@@ -141,7 +136,6 @@ CONF_STATUS_LED = "status_led"
 CONF_MODE = "mode"
 
 CONF_GROUPS = "groups"
-CONF_SAM_FILE = "sam_file"
 CONF_SAM_UPLOAD = "sam_upload"
 CONF_GROUP_SELECT = "group_select"
 CONF_PEQ_DESIGN_RATE = "peq_design_rate"
@@ -717,7 +711,7 @@ def _validate_group_device(conf):
     A subwoofer fed the A+B sum on input 0 and an LFE channel on input 1 gets the LFE content
     twice, once on its own input and once folded into the sum, so it plays several dB hot.
     GLM narrows the program input off the LFE channel rather than allowing this, and
-    sam_import.py does the same on the way in; this catches a group written by hand.
+    the runtime .sam importer does the same on the way in; this catches a group written by hand.
     """
     if conf[CONF_LFE_CHANNEL] != "none" and conf[CONF_SOURCE] == "aes3_sum":
         raise cv.Invalid(
@@ -772,78 +766,6 @@ GROUP_SCHEMA = cv.Schema(
         cv.Required(CONF_DEVICES): cv.All(cv.ensure_list(GROUP_DEVICE_SCHEMA), cv.Length(min=1)),
     }
 )
-
-
-def _import_sam_groups(config):
-    """Expand `sam_file:` into group presets, ahead of any written out in `groups:`.
-
-    Runs before _validate_hub and _validate_groups so that everything downstream -- the
-    duplicate-name check, crossover inheritance and generated C++ table
-    -- only ever sees plain groups and needs no
-    knowledge that a file was involved.
-
-    Imported groups come first, in the order the setup file lists them, so hand-written extras
-    follow the calibrated positions in the generated table.
-
-    This is a whole-config validator rather than a validator on the key because it needs the
-    `monitors:` block to know which devices are really yours. _CONFIG_SCHEMA has validated the
-    entire mapping by the time it runs, so that does not depend on the order the two keys are
-    written in.
-    """
-    path = config.get(CONF_SAM_FILE)
-    if path is None:
-        return config
-
-    # Mirrors _validate_groups: a monitor may be declared without a unique_id, which defaults
-    # to 0, names no device, and must not filter anything.
-    known = {m[CONF_UNIQUE_ID] for m in config.get(CONF_MONITORS, []) if m.get(CONF_UNIQUE_ID)}
-    if not known:
-        known = None
-        _LOGGER.warning(
-            "gensam: no monitors with a unique_id are configured, so every device in '%s' is "
-            "taken as yours. GLM setup files can retain a speaker that was removed, or one "
-            "that was never really there; list your monitors to have those skipped.",
-            path,
-        )
-
-    try:
-        imported = sam_import.load_groups(path, known)
-    except sam_import.SamError as err:
-        raise cv.Invalid(f"{path}: {err}", path=[CONF_SAM_FILE]) from err
-    except OSError as err:
-        raise cv.Invalid(f"Could not read '{path}': {err}", path=[CONF_SAM_FILE]) from err
-
-    if not imported:
-        raise cv.Invalid(
-            f"'{path}' produced no usable groups. Either it holds none, or none of its "
-            f"devices are among the configured monitors; the warnings above say which.",
-            path=[CONF_SAM_FILE],
-        )
-
-    # Validated through the same schema as a hand-written group, not trusted as-is: the level
-    # and delay bounds are what keep an uncalibrated setup file from reaching a speaker.
-    groups = []
-    for group in imported:
-        try:
-            groups.append(GROUP_SCHEMA(group))
-        except cv.Invalid as err:
-            where = "".join(
-                f"[{p}]" if isinstance(p, int) else f".{p}" for p in err.path
-            ).lstrip(".")
-            raise cv.Invalid(
-                f"'{path}' group '{group[CONF_NAME]}' cannot be used as it stands: "
-                f"{err.msg}{f' ({where})' if where else ''}. Convert the file with "
-                f"tools/sam2yaml.py and include the result if you need to correct it by hand.",
-                path=[CONF_SAM_FILE],
-            ) from err
-
-    groups.extend(config.get(CONF_GROUPS, []))
-    config[CONF_GROUPS] = groups
-    _LOGGER.info(
-        "gensam: imported %d group(s) from %s: %s",
-        len(imported), path, ", ".join(g[CONF_NAME] for g in imported),
-    )
-    return config
 
 
 def _validate_groups(config):
@@ -943,7 +865,7 @@ def _validate_hub(config):
     # So does bypassing it: only a group push ever sends calibration, so without one there is
     # nothing to take away, and turning the bypass off again could not give back whatever a
     # speaker holds from GLM. Filled here rather than in _validate_monitor, which cannot see
-    # the groups, and after _import_sam_groups, so a sam_file counts.
+    # the groups.
     if CONF_GROUPS in config or CONF_SAM_UPLOAD in config:
         if CONF_CALIBRATION_BYPASS not in config:
             config[CONF_CALIBRATION_BYPASS] = CALIBRATION_BYPASS_SCHEMA(
@@ -1076,11 +998,6 @@ _CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_DISCOVERY_SLOTS, default=0): cv.int_range(min=0, max=32),
         cv.Optional(CONF_DISCOVERY_SLOT_SETTINGS): cv.ensure_list(DISCOVERY_SLOT_SETTINGS_SCHEMA),
         cv.Optional(CONF_GROUPS): cv.All(cv.ensure_list(GROUP_SCHEMA), cv.Length(min=1)),
-        # A GLM 5 setup file to read the groups from, converted while the configuration is
-        # validated. cv.file_ resolves it against the directory holding this YAML, expands a
-        # leading `~` and takes an absolute path as given, so it can point straight at GLM's
-        # own setup directory. See sam_import.py.
-        cv.Optional(CONF_SAM_FILE): cv.file_,
         cv.Optional(CONF_SAM_UPLOAD): cv.Schema(
             {
                 cv.GenerateID(): cv.declare_id(SamUploadComponent),
@@ -1136,7 +1053,7 @@ _CONFIG_SCHEMA = cv.Schema(
     }
 ).extend(cv.COMPONENT_SCHEMA)
 
-CONFIG_SCHEMA = cv.All(_CONFIG_SCHEMA, _import_sam_groups, _validate_hub, _validate_groups)
+CONFIG_SCHEMA = cv.All(_CONFIG_SCHEMA, _validate_hub, _validate_groups)
 
 
 def _cpp_float(value):

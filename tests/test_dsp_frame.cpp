@@ -254,7 +254,7 @@ void test_captured_level_frames() {
   // -0.3 dB is a group trim rather than a per-device one: in glm_lfe_capture.log the whole
   // system carries Level_Sensitivity:0 and the "2.1 LFE" group carries Group_Sensitivity:-0.3,
   // and GLM sent this same frame to all three speakers. It is the evidence that the two fields
-  // are summed into one level word; sam_import.py adds them for that reason.
+  // are summed into one level word; the .sam importer adds them for that reason.
   check_wire("level -0.3 dB on 0x02 matches capture", make_level(0x02, -0.3f),
              "02' 10 01 00 7B A7 8D C3 FC 7E");
 }

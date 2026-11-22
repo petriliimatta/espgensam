@@ -306,11 +306,11 @@ The field is the sum of the device's own
 calibration trim and the group's offset, not the per-device trim alone — which is all the
 earlier captures could show, because their `Group_Sensitivity` was zero throughout.
 
-`sam_import.py` previously listed `Group_Sensitivity` among the dropped fields, so applying
+The `.sam` importer previously listed `Group_Sensitivity` among the dropped fields, so applying
 such a group played the whole system 0.3 dB loud. It now adds the two. The `-999`
 "not calibrated" sentinel is applied first, deliberately: an uncalibrated device contributes
 0 dB of its own and still takes the group's offset. Covered by
-`test_group_sensitivity_is_summed_into_the_level()` in `tests/test_sam_import.py`, and by the
+the `Group_Sensitivity` case in `tests/test_sam_runtime.cpp`, and by the
 verbatim frame in `tests/test_dsp_frame.cpp`.
 
 ## 6b. `0x43` and `0x4B` recur in group configuration, purpose unknown
