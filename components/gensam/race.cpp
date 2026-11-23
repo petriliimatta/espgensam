@@ -268,6 +268,7 @@ void GenSAMHub::broadcast_volume_and_keepalive_() {
 // --- Incoming replies to what the state machine sent --------------------------------
 
 bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
+  if (this->handle_identify_led_reply_(frame, now)) return true;
   if (this->handle_speaker_settings_reply_(frame, now)) return true;
   if (this->handle_command_rejection_(frame, now) ||
       this->handle_poll_continuation_(frame, now)) {
@@ -987,6 +988,9 @@ void GenSAMHub::race_step_polling_(uint32_t now) {
   }
 
   if (current_query_addr_ != 0 && now - race_step_time_ > POLL_REPLY_TIMEOUT_MS) {
+    if (identify_led_command_pending_ && current_query_addr_ == identify_led_command_addr_) {
+      return;
+    }
     current_query_addr_ = 0;
     iss_query_op_ = 0;
     last_poll_step_time_ = now;

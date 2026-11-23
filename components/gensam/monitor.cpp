@@ -375,7 +375,7 @@ constexpr DipField MONITOR_DIP_FIELDS[] = {
     {0x0006, {"Level -20 dB", "Level -10 dB", "Level -30 dB"}},
     {0x0018, {"Digital B", "Digital A", "Digital A+B"}},
     {0x0020, {"ISS", nullptr, nullptr}},
-    {0x0040, {"LED disable", nullptr, nullptr}},
+    {DIPSW_LED_DISABLE_MASK, {"LED disable", nullptr, nullptr}},
     {0x3000, {"Bass roll-off -4 dB", "Bass roll-off -2 dB", "Bass roll-off -6 dB"}},
     {0x0800, {"Desktop 160 Hz -4 dB", nullptr, nullptr}},
     {0x0600, {"Bass tilt -4 dB", "Bass tilt -2 dB", "Bass tilt -6 dB"}},

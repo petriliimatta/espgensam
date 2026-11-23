@@ -46,6 +46,9 @@ constexpr uint32_t MIN_STALE_TIMEOUT_MS = 5000;
 /// so how often a monitor is heard from depends on the external master's polling cadence.
 constexpr uint32_t PASSIVE_STALE_TIMEOUT_MS = 15000;
 
+/// Retry one unacknowledged restoration of a temporary Identify LED override.
+constexpr uint8_t IDENTIFY_LED_RESTORE_MAX_ATTEMPTS = 2;
+
 /// How long a commanded power change is trusted over contradicting telemetry.
 ///
 /// Monitors keep reporting their previous amplifier state until the transition physically
@@ -529,6 +532,14 @@ void GenSAMHub::send_raw_frame(const std::vector<Uart9BitChar> &raw_chars) {
 }
 
 bool GenSAMHub::send_frame(const Frame &frame) {
+  return this->send_frame_(frame, true);
+}
+
+bool GenSAMHub::send_transient_frame_(const Frame &frame) {
+  return this->send_frame_(frame, false);
+}
+
+bool GenSAMHub::send_frame_(const Frame &frame, bool record_setting) {
   if (!uart9_.is_initialized()) {
     ESP_LOGW(TAG, "Cannot send frame: UART9 driver not initialized");
     return false;
@@ -557,7 +568,9 @@ bool GenSAMHub::send_frame(const Frame &frame) {
   arbiter_.note_tx(millis());
   uart9_.write(wire_chars.data(), wire_chars.size());
   parser_.clear();
-  this->record_setting_frame_(frame, false);
+  if (record_setting) {
+    this->record_setting_frame_(frame, false);
+  }
   return true;
 }
 
@@ -1536,32 +1549,185 @@ void GenSAMHub::identify_monitor_by_address(uint8_t address, uint32_t duration_m
     ESP_LOGW(TAG, "Cannot identify monitor: bus not available for TX");
     return;
   }
-  mon->identify_end_ms = millis() + duration_ms;
-  Frame f = make_bypass(address, mon->mute, /*pulsing=*/true);
-  this->send_frame_twice(f);
+
+  if (mon->identify_restore_led_disable) {
+    if (mon->identify_end_ms != 0) {
+      mon->identify_duration_ms = duration_ms;
+      this->send_identify_pulse_(*mon, duration_ms);
+    } else {
+      ESP_LOGW(TAG, "Cannot identify monitor 0x%02X: previous LED state is still restoring", address);
+    }
+    return;
+  }
+
+  mon->identify_duration_ms = duration_ms;
+  if (mon->dip_switches_known && (mon->dip_word & DIPSW_LED_DISABLE_MASK) != 0) {
+    mon->identify_restore_led_disable = true;
+    mon->identify_led_restore_attempts = 0;
+    if (!this->start_identify_led_command_(*mon, true, millis())) {
+      mon->identify_restore_led_disable = false;
+      ESP_LOGW(TAG, "Cannot temporarily enable LEDs on monitor 0x%02X", address);
+    }
+    return;
+  }
+
+  this->send_identify_pulse_(*mon, duration_ms);
+}
+
+bool GenSAMHub::start_identify_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now) {
+  if (identify_led_command_pending_ || current_query_addr_ != 0 ||
+      !this->send_transient_frame_(make_iss_led_state(mon.address, enabled))) {
+    return false;
+  }
+  identify_led_command_pending_ = true;
+  identify_led_command_enabling_ = enabled;
+  identify_led_command_addr_ = mon.address;
+  identify_led_command_ms_ = now;
+  current_query_addr_ = mon.address;
+  current_query_cmd_ = CMD_WAKEUP;
+  race_step_time_ = now;
+  return true;
+}
+
+bool GenSAMHub::send_identify_pulse_(GenSAMMonitor &mon, uint32_t duration_ms) {
+  Frame f = make_bypass(mon.address, mon.mute, /*pulsing=*/true);
+  if (!this->send_frame_twice(f)) {
+    ESP_LOGW(TAG, "Cannot send Identify pulse to monitor 0x%02X", mon.address);
+    return false;
+  }
+  mon.identify_end_ms = millis() + duration_ms;
   ESP_LOGI(TAG, "Identify activated on monitor 0x%02X (%s) for %u ms (val 0x%02X)",
-           address, mon->model.c_str(), (unsigned)duration_ms, f.payload[0]);
+           mon.address, mon.model.c_str(), (unsigned)duration_ms, f.payload[0]);
+  return true;
+}
+
+bool GenSAMHub::handle_identify_led_reply_(const Frame &frame, uint32_t now) {
+  if (!identify_led_command_pending_ || frame.address != HOST_ADDRESS ||
+      current_query_addr_ != identify_led_command_addr_) {
+    return false;
+  }
+
+  const uint8_t address = identify_led_command_addr_;
+  const bool enabling = identify_led_command_enabling_;
+  GenSAMMonitor *mon = registry_.find(address);
+  if (frame.command == CMD_COMMAND_REJECTED || frame.command == CMD_UNSUPPORTED) {
+    identify_led_command_pending_ = false;
+    current_query_addr_ = 0;
+    current_query_cmd_ = 0;
+    if (enabling) {
+      if (mon != nullptr) {
+        mon->identify_restore_led_disable = false;
+        mon->identify_led_restore_attempts = 0;
+      }
+      ESP_LOGW(TAG, "Monitor 0x%02X rejected temporary LED enable for Identify", address);
+    } else if (mon == nullptr ||
+               mon->identify_led_restore_attempts >= IDENTIFY_LED_RESTORE_MAX_ATTEMPTS) {
+      if (mon != nullptr) {
+        mon->identify_restore_led_disable = false;
+        mon->identify_led_restore_attempts = 0;
+      }
+      ESP_LOGW(TAG, "Monitor 0x%02X rejected restoration of its saved LED-disable state", address);
+    } else {
+      ESP_LOGW(TAG, "Monitor 0x%02X rejected LED restoration; will retry", address);
+    }
+    return true;
+  }
+
+  if ((frame.command != CMD_REPORT_STATUS && frame.command != CMD_ACK) ||
+      !frame.payload.empty()) {
+    return false;
+  }
+
+  identify_led_command_pending_ = false;
+  current_query_addr_ = 0;
+  current_query_cmd_ = 0;
+  if (mon == nullptr) {
+    ESP_LOGW(TAG, "Monitor 0x%02X disappeared during Identify LED operation", address);
+    return true;
+  }
+  this->mark_monitor_seen_(*mon);
+
+  if (enabling) {
+    delayMicroseconds(300);
+    this->send_identify_pulse_(*mon, mon->identify_duration_ms);
+  } else {
+    mon->identify_restore_led_disable = false;
+    mon->identify_led_restore_attempts = 0;
+    ESP_LOGI(TAG, "Restored saved LED-disable state on monitor 0x%02X", address);
+  }
+  (void) now;
+  return true;
 }
 
 void GenSAMHub::check_identify_timeouts_() {
-  if (!can_transmit() || resuming_ || current_query_addr_ != 0 || apply_.active || speaker_transaction_.active ||
+  const uint32_t now = millis();
+  if (identify_led_command_pending_) {
+    if (now - identify_led_command_ms_ <= SPEAKER_SETTINGS_REPLY_TIMEOUT_MS) {
+      return;
+    }
+    const uint8_t address = identify_led_command_addr_;
+    const bool enabling = identify_led_command_enabling_;
+    identify_led_command_pending_ = false;
+    if (current_query_addr_ == address) {
+      current_query_addr_ = 0;
+    }
+    current_query_cmd_ = 0;
+    GenSAMMonitor *mon = registry_.find(address);
+    if (enabling) {
+      ESP_LOGW(TAG, "No reply enabling Identify LEDs on monitor 0x%02X; attempting to restore its saved state",
+               address);
+    } else if (mon != nullptr &&
+               mon->identify_led_restore_attempts >= IDENTIFY_LED_RESTORE_MAX_ATTEMPTS) {
+      mon->identify_restore_led_disable = false;
+      mon->identify_led_restore_attempts = 0;
+      ESP_LOGW(TAG, "Could not confirm restoring the saved LED-disable state on monitor 0x%02X",
+               address);
+    } else {
+      ESP_LOGW(TAG, "No reply restoring the saved LED-disable state on monitor 0x%02X; will retry",
+               address);
+    }
+    return;
+  }
+
+  if (!can_transmit() || resuming_ || current_query_addr_ != 0 || apply_.active ||
+      speaker_transaction_.active ||
       (race_state_ != RaceState::POLLING_MONITORS && race_state_ != RaceState::IDLE)) {
     return;
   }
-  uint32_t now = millis();
   for (auto &kv : registry_.monitors()) {
     GenSAMMonitor &mon = kv.second;
+
+    if (mon.identify_restore_led_disable &&
+        mon.identify_led_restore_attempts >= IDENTIFY_LED_RESTORE_MAX_ATTEMPTS) {
+      mon.identify_restore_led_disable = false;
+      mon.identify_led_restore_attempts = 0;
+      ESP_LOGW(TAG, "Could not restore the saved LED-disable state on monitor 0x%02X",
+               mon.address);
+      continue;
+    }
+
+    if (mon.identify_restore_led_disable &&
+        (mon.identify_end_ms == 0 || now >= mon.identify_end_ms)) {
+      mon.identify_end_ms = 0;
+      if (this->start_identify_led_command_(mon, false, now)) {
+        mon.identify_led_restore_attempts++;
+        ESP_LOGI(TAG, "Restoring saved LED-disable state on monitor 0x%02X", mon.address);
+      }
+      return;
+    }
+
     if (mon.identify_end_ms == 0 || now < mon.identify_end_ms) {
       continue;
     }
-    mon.identify_end_ms = 0;
-    if (!can_transmit()) {
-      continue;
-    }
     Frame f = make_bypass(mon.address, mon.mute, false, this->live_leds_enabled_(&mon));
-    this->send_frame_twice(f);
-    ESP_LOGI(TAG, "Identify completed on monitor 0x%02X (%s); restored steady LED (val 0x%02X)",
-             mon.address, mon.model.c_str(), f.payload[0]);
+    if (this->send_frame_twice(f)) {
+      mon.identify_end_ms = 0;
+      ESP_LOGI(TAG, "Identify completed on monitor 0x%02X (%s); restored steady LED (val 0x%02X)",
+               mon.address, mon.model.c_str(), f.payload[0]);
+    } else {
+      ESP_LOGW(TAG, "Cannot restore steady LED after Identify on monitor 0x%02X; will retry",
+               mon.address);
+    }
   }
 }
 

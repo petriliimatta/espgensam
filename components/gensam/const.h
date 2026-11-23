@@ -72,6 +72,8 @@ static constexpr uint8_t CMD_DISCOVERY = 0xFE;        ///< Monitor discovery pin
 
 /// CMD_DIP_SWITCH sub-command: read the current/previous DIP words and auxiliary level word.
 static constexpr uint8_t DIPSW_READ_STATUS = 0x84;
+/// DIP word bit that disables the monitor's front LEDs.
+static constexpr uint32_t DIPSW_LED_DISABLE_MASK = 0x00000040;
 
 // --- CMD_SERVICE (0x15) sub-commands -------------------------------------
 /// @name Service sub-commands

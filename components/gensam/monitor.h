@@ -202,6 +202,9 @@ struct GenSAMMonitor {
 
   GenSAMMonitorBinding *binding{nullptr}; ///< Pointer to matched Home Assistant entity binding.
   uint32_t identify_end_ms{0};            ///< If non-zero, timestamp (millis) when LED pulsing should revert.
+  uint32_t identify_duration_ms{0};       ///< Requested pulse duration, started after any LED override ACK.
+  uint8_t identify_led_restore_attempts{0}; ///< Restore attempts for a temporary stored LED-disable override.
+  bool identify_restore_led_disable{false}; ///< Restore the stored LED-disable setting after Identify.
 
   /// @brief Check whether this monitor is a subwoofer (7xxx series).
   /// Note: The W371 adaptive woofer system is an adaptive woofer system, not a subwoofer, and is excluded.

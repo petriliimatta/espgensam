@@ -12,7 +12,8 @@
 ///    hardware in the studio/room.
 ///    When pressed, the button invokes GenSAMHub::identify_monitor_by_serial(), which
 ///    transmits CMD_BYPASS (0x2B) with the LED pulsing bit asserted. The hub automatically
-///    restores steady LED status after 5000 ms.
+///    restores steady LED status after 5000 ms. If the stored DIP setting disables the LEDs,
+///    the hub temporarily enables them for the pulse and restores the stored setting afterward.
 ///
 /// 2. Bus Rediscovery (GenSAMRediscoverButton):
 ///    Allows manually triggering a fresh RACE discovery and address assignment cycle

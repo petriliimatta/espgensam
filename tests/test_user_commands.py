@@ -31,6 +31,11 @@ def main():
         "void GenSAMHub::set_group_mute(",
         "void GenSAMHub::service_pending_writes_(",
         "void GenSAMHub::check_monitor_timeouts_()",
+        "void GenSAMHub::identify_monitor_by_address(",
+        "bool GenSAMHub::start_identify_led_command_(",
+        "bool GenSAMHub::send_identify_pulse_(",
+        "bool GenSAMHub::handle_identify_led_reply_(",
+        "void GenSAMHub::check_identify_timeouts_()",
     ))
     methods += method(race, "void GenSAMHub::update_race_state_machine_()")
     methods += method(registry, "void MonitorRegistry::publish_stale_telemetry()")
@@ -46,6 +51,7 @@ def main():
 #include <functional>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 uint32_t clock_ms = 0;
 uint32_t millis() { return clock_ms; }
@@ -66,6 +72,12 @@ constexpr uint32_t STALE_POLL_CYCLES = 4;
 constexpr uint32_t PASSIVE_STALE_TIMEOUT_MS = 15000;
 constexpr uint32_t SESSION_LAPSE_MS = 3000;
 constexpr int CMD_QUERY_STATUS = 8, CMD_REPORT_STATUS = 9, HOST_ADDRESS = 1;
+constexpr int CMD_ACK = 6, CMD_COMMAND_REJECTED = 0x10, CMD_UNSUPPORTED = 0x11;
+constexpr int CMD_BYPASS = 0x2B, CMD_WAKEUP = 0x3A;
+constexpr uint8_t WAKEUP_OP_ISS_LED = 0x06, ISS_LED_ENABLED = 0x00, ISS_LED_DISABLED = 0x01;
+constexpr uint32_t DIPSW_LED_DISABLE_MASK = 0x40, SPEAKER_SETTINGS_REPLY_TIMEOUT_MS = 500;
+constexpr uint8_t IDENTIFY_LED_RESTORE_MAX_ATTEMPTS = 2;
+void delayMicroseconds(uint32_t) {}
 namespace sensor {
 struct Sensor {
   float state = 0;
@@ -103,12 +115,36 @@ class MonitorRegistry {
 struct Frame {
   int address = HOST_ADDRESS, command = CMD_REPORT_STATUS;
   std::vector<uint8_t> payload{0};
+  Frame() = default;
+  Frame(uint8_t addr, int cmd, std::vector<uint8_t> data)
+      : address(addr), command(cmd), payload(std::move(data)) {}
 };
 Frame make_query(uint8_t, int) { return {}; }
+Frame make_iss_led_state(uint8_t addr, bool enabled) {
+  return Frame(addr, CMD_WAKEUP,
+               {WAKEUP_OP_ISS_LED, enabled ? ISS_LED_ENABLED : ISS_LED_DISABLED});
+}
+Frame make_bypass(uint8_t addr, bool mute, bool pulsing, bool leds_enabled = true) {
+  uint8_t value = mute ? 1 : 0;
+  if (pulsing) value |= 0x0C;
+  else if (!leds_enabled) value |= 0x08;
+  else value |= mute ? 0x02 : 0x04;
+  return Frame(addr, CMD_BYPASS, {value});
+}
 struct Monitor {
   bool standby_known = true, standby = false;
-  uint32_t identify_end_ms = 0, last_seen_ms = 0;
+  uint8_t address = 0;
+  uint32_t unique_id = 1;
+  std::string model = "8351B";
+  bool mute = false;
+  uint32_t dip_word = 0;
+  bool dip_switches_known = false;
+  bool system_leds_known = false, system_leds_enabled = true;
+  uint32_t identify_end_ms = 0, identify_duration_ms = 0, last_seen_ms = 0;
+  uint8_t identify_led_restore_attempts = 0;
+  bool identify_restore_led_disable = false;
 };
+using GenSAMMonitor = Monitor;
 void parse_telemetry(const uint8_t *data, size_t size, Monitor &mon) {
   if (size == 2 && data[0] == 0x47 && (data[1] == 0x03 || data[1] == 0x04)) {
     mon.standby_known = false;
@@ -128,7 +164,9 @@ struct Registry {
   }
   Monitor *find(uint8_t address) {
     const auto it = items.find(address);
-    return it == items.end() ? nullptr : &it->second;
+    if (it == items.end()) return nullptr;
+    it->second.address = address;
+    return &it->second;
   }
   auto &monitors() { return items; }
   void publish_stale_telemetry() { ++stale; }
@@ -179,7 +217,11 @@ class GenSAMHub {
   uint32_t volume_tx_interval_ms_ = 50, last_sleep_tx_ms_ = 0;
   uint32_t last_timeout_check_ = 0, poll_interval_ms_ = 1000;
   uint32_t group_generation_ = 5;
-  uint8_t current_query_addr_ = 0, group_count_ = 2, iss_query_op_ = 0, sleep_probe_phase_ = 0;
+  uint8_t current_query_addr_ = 0, current_query_cmd_ = 0, group_count_ = 2,
+          iss_query_op_ = 0, sleep_probe_phase_ = 0;
+  uint8_t identify_led_command_addr_ = 0;
+  bool identify_led_command_pending_ = false, identify_led_command_enabling_ = false;
+  uint32_t identify_led_command_ms_ = 0;
   size_t current_poll_index_ = 0;
   int selected_group_ = 0, default_group_ = 0, pending_group_ = -1;
   struct { bool active = false; } apply_;
@@ -191,6 +233,9 @@ class GenSAMHub {
   std::vector<uint8_t> poll_addrs_;
   std::vector<std::function<void()>> user_commands_;
   int discoveries = 0, transmissions = 0, notifications = 0, status_changes = 0, race_steps = 0;
+  int transient_frames = 0;
+  bool transmit_ok = true;
+  std::vector<Frame> sent_frames;
   int volume_frames = 0, mute_frames = 0;
   int mute_evaluations = 0, standby_evaluations = 0;
   bool can_transmit() const { return !listen_only_ && !bus_silent_ && !arbiter_.active; }
@@ -200,7 +245,23 @@ class GenSAMHub {
     current_query_addr_ = 0;
     race_state_ = RaceState::WAKEUP_SENT;
   }
-  void send_frame(const Frame &) { ++transmissions; }
+  bool send_frame(const Frame &frame) {
+    if (!transmit_ok) return false;
+    ++transmissions;
+    sent_frames.push_back(frame);
+    return true;
+  }
+  bool send_frame_twice(const Frame &frame) {
+    const bool first = this->send_frame(frame);
+    return this->send_frame(frame) || first;
+  }
+  bool send_transient_frame_(const Frame &frame) {
+    ++transient_frames;
+    return this->send_frame(frame);
+  }
+  bool live_leds_enabled_(const Monitor *mon) const {
+    return mon != nullptr && mon->system_leds_known ? mon->system_leds_enabled : true;
+  }
   void update_bus_status_() { ++status_changes; }
   void notify_state_callbacks_() { ++notifications; }
   void evaluate_system_mute_() { ++mute_evaluations; }
@@ -242,7 +303,13 @@ class GenSAMHub {
   void service_pending_writes_(uint32_t now);
   void update_race_state_machine_();
   void check_monitor_timeouts_();
+  void identify_monitor_by_serial(const std::string &, uint32_t) {}
   bool handle_active_reply_(const Frame &frame, uint32_t now);
+  void identify_monitor_by_address(uint8_t address, uint32_t duration_ms = 5000);
+  bool start_identify_led_command_(Monitor &mon, bool enabled, uint32_t now);
+  bool send_identify_pulse_(Monitor &mon, uint32_t duration_ms);
+  bool handle_identify_led_reply_(const Frame &frame, uint32_t now);
+  void check_identify_timeouts_();
 };
 '''
     cpp += methods + reply + r'''
@@ -499,6 +566,95 @@ int main() {
   storing.service_user_commands_(100);
   storing.update_race_state_machine_();
   assert(storing.transmissions == 0 && storing.race_steps == 0);
+
+  // Identify temporarily clears a stored LED-disable flag, blinks, then restores it
+  // without storing the temporary 3A 06 frames.
+  GenSAMHub identify;
+  auto *identified = identify.registry_.find(12);
+  identified->dip_switches_known = true;
+  identified->dip_word = DIPSW_LED_DISABLE_MASK | 1;
+  identified->system_leds_known = true;
+  identified->system_leds_enabled = false;
+  identify.executing_user_command_ = true;
+  clock_ms = 1000;
+  identify.identify_monitor_by_address(12, 5000);
+  assert(identify.identify_led_command_pending_ && identify.current_query_addr_ == 12);
+  assert(identify.transient_frames == 1 && identify.sent_frames.size() == 1);
+  assert(identify.sent_frames.back().command == CMD_WAKEUP &&
+         identify.sent_frames.back().payload == std::vector<uint8_t>({0x06, 0x00}));
+
+  Frame identify_ack;
+  identify_ack.address = HOST_ADDRESS;
+  identify_ack.command = CMD_ACK;
+  identify_ack.payload.clear();
+  clock_ms = 1010;
+  assert(identify.handle_identify_led_reply_(identify_ack, clock_ms));
+  assert(!identify.identify_led_command_pending_ && identify.current_query_addr_ == 0);
+  assert(identified->identify_end_ms == 6010);
+  assert(identify.sent_frames.size() == 3 &&
+         identify.sent_frames.back().command == CMD_BYPASS &&
+         identify.sent_frames.back().payload == std::vector<uint8_t>({0x0C}));
+
+  clock_ms = 6009;
+  identify.check_identify_timeouts_();
+  assert(!identify.identify_led_command_pending_ && identify.transmissions == 3);
+  clock_ms = 6010;
+  identify.check_identify_timeouts_();
+  assert(identify.identify_led_command_pending_ && identify.current_query_addr_ == 12);
+  assert(identify.sent_frames.back().command == CMD_WAKEUP &&
+         identify.sent_frames.back().payload == std::vector<uint8_t>({0x06, 0x01}));
+  assert(identify.handle_identify_led_reply_(identify_ack, 6020));
+  assert(!identified->identify_restore_led_disable && identified->identify_end_ms == 0);
+  assert(identify.transient_frames == 2 && identify.sent_frames.size() == 4);
+
+  // A missing enable reply must never start the pulse, and restoration is retried finitely.
+  GenSAMHub missing_identify_ack;
+  auto *missing_target = missing_identify_ack.registry_.find(12);
+  missing_target->dip_switches_known = true;
+  missing_target->dip_word = DIPSW_LED_DISABLE_MASK;
+  missing_identify_ack.executing_user_command_ = true;
+  clock_ms = 9000;
+  missing_identify_ack.identify_monitor_by_address(12, 1000);
+  clock_ms = 9501;
+  missing_identify_ack.check_identify_timeouts_();
+  assert(!missing_identify_ack.identify_led_command_pending_ &&
+         missing_target->identify_restore_led_disable);
+  clock_ms = 9502;
+  missing_identify_ack.check_identify_timeouts_();
+  assert(missing_identify_ack.sent_frames.size() == 2 &&
+         missing_identify_ack.sent_frames.back().payload == std::vector<uint8_t>({0x06, 0x01}) &&
+         missing_target->identify_led_restore_attempts == 1);
+  clock_ms = 10003;
+  missing_identify_ack.check_identify_timeouts_();
+  clock_ms = 10004;
+  missing_identify_ack.check_identify_timeouts_();
+  assert(missing_identify_ack.sent_frames.size() == 3 &&
+         missing_target->identify_led_restore_attempts == 2);
+  clock_ms = 10505;
+  missing_identify_ack.check_identify_timeouts_();
+  assert(!missing_target->identify_restore_led_disable &&
+         missing_target->identify_end_ms == 0);
+  assert(missing_identify_ack.transient_frames == 3 &&
+         missing_identify_ack.sent_frames.size() == 3);
+
+  // Without a stored LED-disable bit, Identify keeps the existing live-off restore behavior.
+  GenSAMHub live_leds_off;
+  auto *live_target = live_leds_off.registry_.find(12);
+  live_target->dip_switches_known = true;
+  live_target->dip_word = 1;
+  live_target->system_leds_known = true;
+  live_target->system_leds_enabled = false;
+  live_leds_off.executing_user_command_ = true;
+  clock_ms = 7000;
+  live_leds_off.identify_monitor_by_address(12, 1000);
+  assert(live_leds_off.sent_frames.size() == 2 &&
+         live_leds_off.sent_frames.back().payload == std::vector<uint8_t>({0x0C}));
+  clock_ms = 8000;
+  live_leds_off.check_identify_timeouts_();
+  assert(live_leds_off.sent_frames.size() == 4 &&
+         live_leds_off.sent_frames.back().payload == std::vector<uint8_t>({0x08}));
+  assert(live_target->identify_end_ms == 0);
+
   saved.control_preference_.fail = true;
   const int save_warning = warnings;
   saved.save_control_state_();

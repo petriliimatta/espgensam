@@ -150,7 +150,7 @@ bool is_dip_switch_status_query(const Frame &frame);
 /// - Steady, LEDs enabled: muted shows LED_RED (0x03), unmuted shows LED_OFF (0x04).
 /// - Steady, LEDs disabled: 0x08, with the mute bit preserved (0x09 when muted).
 /// - Identify (@p pulsing true): LED_OFF with the pulsing bit set, mute state preserved; it
-///   overrides @p leds_enabled, since a speaker that cannot be seen cannot be identified.
+///   overrides the live LED setting. The hub separately handles a stored DIP LED-disable bit.
 /// @param addr Target address; may be a monitor, MULTICAST_ADDRESS, or BROADCAST_ADDRESS.
 /// @param mute True to mute the channel.
 /// @param pulsing True to pulse the front LED for physical identification.

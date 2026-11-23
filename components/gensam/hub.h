@@ -96,8 +96,8 @@
 ///    The live LED setting is volatile. Discovery reads the speaker's stored LED preference
 ///    where supported; an unsupported query leaves it unknown. Explicit store synchronizes
 ///    a known live LED choice to 3A 06 before saving the speaker's working profile.
-///    Mute and identify frames are 0x2B frames too, so they carry the live LED setting rather
-///    than re-enabling the LEDs.
+///    Mute frames preserve the live LED setting. Identify temporarily enables the stored LED
+///    state when its DIP word disables LEDs, then restores that state without storing the override.
 ///    loop() transmits requests when the bus is in a safe slot - polling or idle, no reply
 ///    outstanding, TX available - at
 ///    most one item per loop() call. Volume additionally waits out standby and goes no more
@@ -747,6 +747,26 @@ class GenSAMHub : public Component {
 
   /// @brief Restore the steady front LED on monitors whose identify pulse has expired.
   void check_identify_timeouts_();
+  /// @brief Send one temporary stored LED-state change and reserve its reply slot.
+  /// @param mon Target monitor.
+  /// @param enabled Whether to temporarily enable or restore the stored LED state.
+  /// @param now Current millis() timestamp.
+  /// @return True if the frame was sent and its reply slot reserved.
+  bool start_identify_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now);
+  /// @brief Send the Identify blink and start its duration only after successful TX.
+  /// @param mon Target monitor.
+  /// @param duration_ms Requested blink duration.
+  /// @return True if the pulse frames were sent.
+  bool send_identify_pulse_(GenSAMMonitor &mon, uint32_t duration_ms);
+  /// @brief Send a transient frame without adding a setting to the speaker-store snapshot.
+  /// @param frame Frame to send.
+  /// @return True if transmission was accepted.
+  bool send_transient_frame_(const Frame &frame);
+  /// @brief Shared frame transmitter; optionally records persistent speaker-setting changes.
+  /// @param frame Frame to send.
+  /// @param record_setting Whether to update the speaker-store snapshot.
+  /// @return True if transmission was accepted.
+  bool send_frame_(const Frame &frame, bool record_setting);
 
   /// @brief Periodically emit the RX / framing statistics diagnostic line.
   void log_stats_();
@@ -917,6 +937,11 @@ class GenSAMHub : public Component {
   /// @param now Current millis() timestamp.
   /// @return True if the frame was the expected reply and has been fully handled.
   bool handle_active_reply_(const Frame &frame, uint32_t now);
+  /// @brief Consume the reply to a temporary Identify LED-enable/restore command.
+  /// @param frame Incoming reply.
+  /// @param now Current millis() timestamp.
+  /// @return True if the reply belongs to the pending Identify LED command.
+  bool handle_identify_led_reply_(const Frame &frame, uint32_t now);
   /// @brief Consume the second telemetry frame some monitors use to continue a long reply.
   bool handle_poll_continuation_(const Frame &frame, uint32_t now);
   /// @brief Handle explicit 0x10/0x11 replies to an outstanding unicast request.
@@ -1144,6 +1169,10 @@ class GenSAMHub : public Component {
   uint8_t rid_retries_{0};
   uint8_t current_query_addr_{0};
   uint8_t current_query_cmd_{0};
+  bool identify_led_command_pending_{false};
+  bool identify_led_command_enabling_{false};
+  uint8_t identify_led_command_addr_{0};
+  uint32_t identify_led_command_ms_{0};
   uint8_t query_retries_{0};  ///< Attempts already spent on the outstanding device query.
   uint32_t last_poll_cycle_time_{0};
   uint32_t last_poll_step_time_{0};
