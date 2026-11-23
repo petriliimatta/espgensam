@@ -18,11 +18,6 @@
 <img src="docs/images/ha-hub.png" alt="Home Assistant hub controls, sensors and connected monitors" width="360">
 <img src="docs/images/ha-speaker.png" alt="Home Assistant monitor controls, sensors and diagnostics" width="360">
 
-**ESPHome web interface:** system controls, group controls and monitor telemetry.
-
-<img src="docs/images/hub.png" alt="ESPHome web interface system and group controls" width="420">
-<img src="docs/images/speaker.png" alt="ESPHome web interface monitor controls and telemetry" width="420">
-
 **SAM uploader:** validated setup preview.
 
 <img src="docs/images/upload.png" alt="SAM uploader with an example validated setup preview" width="600">
