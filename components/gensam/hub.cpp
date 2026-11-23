@@ -152,6 +152,7 @@ void GenSAMHub::setup() {
       b.calibration_bypass_switch->publish_state(b.calibration_bypass);
     }
   }
+  registry_.publish_initial_telemetry_events();
   if (calibration_bypass_switch_ != nullptr) {
     calibration_bypass_switch_->publish_state(calibration_bypass_);
   }

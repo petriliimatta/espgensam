@@ -310,7 +310,11 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
     if (mon == nullptr) return false;
     mon->standby_known = false;
     parse_telemetry(frame.payload.data(), frame.payload.size(), *mon);
-    if (!mon->standby_known) return true;  // Keep waiting for actual power telemetry.
+    if (!mon->standby_known) {
+      registry_.bind_if_matched(*mon);
+      registry_.publish_telemetry_events(*mon);
+      return true;  // Keep waiting for actual power telemetry.
+    }
     this->mark_monitor_seen_(*mon);
     registry_.publish_telemetry(*mon);
     current_query_addr_ = 0;

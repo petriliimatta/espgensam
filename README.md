@@ -57,13 +57,29 @@ controls.
 Each discovery slot automatically gets its own Home Assistant device named `Monitor 1`,
 `Monitor 2`, and so on. No `esphome: devices:` declarations or `device_id` settings are
 needed. On the device web page (web server version 3) each monitor gets its own card, named
-after the monitor, holding all of its entities: mute, input, bypass, crossover, level and delay
-first, then online status, input level, output level, temperature, model, serial number,
-firmware version, hardware ID, identify and SAM name. Diagnostic tweeter, midrange and woofer
-coil temperatures, main and low supply voltages, and processor load are also created and enabled
-by default; each stays unknown on models that do not report it (supply rails come from three-way
-models only, processor load from firmware 1.12 onwards). Previously registered disabled entities
-must be enabled in Home Assistant; firmware updates do not change their registry settings.
+after the monitor, holding all of its entities in this order: SAM name, model, firmware version,
+serial number, hardware ID and DIP switch status; then mute, level and input; online status,
+protection and clipping; input level, output level and temperature; delay, crossover, bypass
+and identify; and last the tweeter, midrange and woofer coil temperatures, main and low supply
+voltages, and processor load.
+
+In Home Assistant, which sorts each section of a device page alphabetically, mute, level and
+input are controls and protection, clipping, input level, output level and temperature are
+sensors, making them eligible for auto-generated dashboards. Delay, crossover, bypass and identify
+are configuration; everything else is diagnostic. Level, delay, crossover and bypass are disabled
+by default. The coil temperatures, supply voltages and processor load are enabled by default and
+stay unknown on models that do not report them (supply rails come from three-way models only,
+processor load from firmware 1.12 onwards). Previously registered disabled entities must be
+enabled in Home Assistant; firmware updates do not change their registry settings. If categories
+remain in their old sections after an update, reload the ESPHome integration in Home Assistant.
+
+**Protection** and **Clipping** are problem binary sensors, both off unless the speaker reports
+otherwise; both start off at boot. Protection turns on at a protection-started report and off at
+protection-ended. The speaker reports only those transitions, so a protection episode that began
+while this device was rebooting or the monitor was unreachable reads off until it ends. Clipping
+is on for the poll cycle in which the speaker reported clipping and off again after the next
+report without it. Both are unknown while the monitor is offline or telemetry is stale.
+
 Cards follow the System Controls and
 Group Preset sections in slot order. Entities on a sub-device use short names such as
 `Temperature`; ESPHome displays the device name alongside them. Switching an existing slot to
@@ -88,8 +104,8 @@ gensam:
 
 Add these entries to the existing `web_server:` and `gensam:` sections, rather than creating
 duplicate sections. The slot number must not exceed `discovery_slots`. The optional
-`sorting_weight` in a slot's `web_server:` block sets the online status weight (default 50);
-items are spaced by 10, with the controls before it.
+`sorting_weight` in a slot's `web_server:` block sets the weight of the slot's first entity
+(default 50); the rest follow in card order, spaced by 10.
 The numbered slots are not permanent
 speaker identities: assignments are retained during rediscovery but may differ after restart
 or changes in the discovered monitors. Existing Home Assistant entity organization may change.

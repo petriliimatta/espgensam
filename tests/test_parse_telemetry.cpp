@@ -117,20 +117,38 @@ void test_one_byte_telemetry_events() {
         "protection/clipping/lock/input events parse");
   check(m.last_telemetry_events == std::vector<uint8_t>({0x02, 0x04, 0x05, 0x06}),
         "event tags are preserved in wire order");
-  check(m.protection_known && m.protection_active, "protection-started event updates state");
+  check(m.protection_active && m.clipping_active, "protection-started and clipping events update state");
   check(m.digital_input_known && !m.digital_input_available,
         "digital-input-unavailable event updates state");
 
   const uint8_t ended[] = {0x03, 0x07};
   parse_telemetry(ended, sizeof(ended), m);
-  check(m.protection_known && !m.protection_active, "protection-ended event updates state");
+  check(!m.protection_active, "protection-ended event updates state");
+  check(m.clipping_active, "continuation without clipping keeps the cycle's clipping report");
   check(m.digital_input_available, "digital-input-available event updates state");
+
 
   const uint8_t event_only_long[] = {0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x02,
                                      0x03, 0x04, 0x05, 0x06, 0x07, 0x02};
   parse_telemetry(event_only_long, sizeof(event_only_long), m);
   check(m.temperature == 0 && m.input_db == 0 && m.output_db == 0,
         "event-only payload does not fall back to fixed-offset meters");
+
+  const uint8_t next_report[] = {0x41, 0x1E, 0x42, 0xB0};
+  parse_telemetry(next_report, sizeof(next_report), m);
+  check(!m.clipping_active, "next primary report without clipping clears it");
+  const uint8_t clipped_report[] = {0x04, 0x41, 0x1E};
+  parse_telemetry(clipped_report, sizeof(clipped_report), m);
+  check(m.clipping_active, "clipping in a primary report is kept regardless of tag order");
+}
+
+void test_empty_reply_does_not_repeat_events() {
+  GenSAMMonitor m;
+  const uint8_t clipping[] = {0x04};
+  parse_telemetry(clipping, sizeof(clipping), m);
+  check(m.last_telemetry_events.size() == 1, "clipping event is recorded");
+  check(!parse_telemetry(nullptr, 0, m) && m.last_telemetry_events.empty(),
+        "empty reply clears the previous frame's events");
 }
 
 /// A live 7350A frame with signal present. 0x43 sits at the floor because a subwoofer has no
@@ -241,15 +259,26 @@ void test_bare_07_updates_availability_not_standby() {
   check(!m.standby_known, "bare 07: does not arm standby_known");
 }
 
-/// Format A has no power field and absolute offsets, so a leading event must not shift them.
+/// Format A has no power field, and event-like data bytes must not shift its absolute offsets.
 void test_format_a_unshifted() {
   GenSAMMonitor m = parse({0x07, 0x14, 0x00, 0x00, 0x00, 0x00, 0xB0, 0x00, 0x00, 0x00, 0x00,
                            0x00, 0x9C});
   check(!m.standby_known, "format A: byte 0 is not a power state");
   check(m.temperature == 0x14, "format A: temperature read from absolute offset 1");
   check(m.output_db == static_cast<int8_t>(0x9C), "format A: output read from absolute offset 12");
-  check(m.digital_input_known && m.digital_input_available,
-        "format A: leading event remains available to event consumers");
+  check(!m.digital_input_known && m.last_telemetry_events.empty(),
+        "format A: fixed-offset bytes are not reported as events");
+}
+
+void test_format_a_data_is_not_clipping_or_protection() {
+  GenSAMMonitor m;
+  m.protection_active = false;
+  m.clipping_active = true;
+  const uint8_t data[] = {0x00, 0x14, 0x02, 0x04, 0x00, 0x00, 0xB0,
+                          0x00, 0x00, 0x00, 0x00, 0x00, 0x9C};
+  parse_telemetry(data, sizeof(data), m);
+  check(m.last_telemetry_events.empty() && !m.protection_active && !m.clipping_active,
+        "format A: data bytes do not generate clipping or change protection");
 }
 
 // --- Tag 0x49 (counter) -------------------------------------------------------------------------
@@ -328,6 +357,7 @@ int main() {
   test_bare_07_updates_availability_not_standby();
   test_leading_event_does_not_shift_records();
   test_one_byte_telemetry_events();
+  test_empty_reply_does_not_repeat_events();
   test_subwoofer_output_follows_active_channel();
   test_output_peak_retains_unchanged_channel_meters();
   test_lfe_peak_is_not_driver_output();
@@ -336,6 +366,7 @@ int main() {
   test_tag_47_transition();
   test_tag_47_invalid_operand_ignored();
   test_format_a_unshifted();
+  test_format_a_data_is_not_clipping_or_protection();
   test_counter_operand_is_consumed();
   test_counter_equal_to_meter_tag();
   test_coil_temperatures();

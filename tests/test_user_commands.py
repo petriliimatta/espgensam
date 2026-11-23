@@ -86,12 +86,14 @@ struct GenSAMMonitorBinding {
                  *md_coil_temperature_sensor = nullptr, *bs_coil_temperature_sensor = nullptr,
                  *psu_main_voltage_sensor = nullptr, *psu_low_voltage_sensor = nullptr,
                  *processor_load_sensor = nullptr;
-  binary_sensor::BinarySensor *online_sensor = nullptr;
+  binary_sensor::BinarySensor *online_sensor = nullptr, *protection_sensor = nullptr,
+                              *clipping_sensor = nullptr;
 };
 class MonitorRegistry {
  public:
   struct PowerMonitor {
     bool online = false, standby = false, standby_known = false, standby_transition = false;
+    bool protection_active = false, clipping_active = false;
   };
   std::vector<GenSAMMonitorBinding> bindings_;
   std::map<uint8_t, PowerMonitor> monitors_;
@@ -131,6 +133,8 @@ struct Registry {
   auto &monitors() { return items; }
   void publish_stale_telemetry() { ++stale; }
   void publish_telemetry(const Monitor &) { ++published; }
+  void publish_telemetry_events(const Monitor &) {}
+  void bind_if_matched(Monitor &) {}
   bool expire_stale(uint32_t, uint32_t) { ++timeout_checks; return true; }
 };
 struct Arbiter {
@@ -201,6 +205,8 @@ class GenSAMHub {
   void evaluate_system_mute_() { ++mute_evaluations; }
   void evaluate_system_standby_() { ++standby_evaluations; }
   void mark_monitor_seen_(Monitor &) {}
+  bool handle_command_rejection_(const Frame &, uint32_t) { return false; }
+  bool handle_poll_continuation_(const Frame &, uint32_t) { return false; }
   void transmit_volume_() {
     volume_tx_pending_ = false; ++volume_frames; ++transmissions;
   }

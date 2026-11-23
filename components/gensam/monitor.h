@@ -137,6 +137,8 @@ struct GenSAMMonitorBinding {
   sensor::Sensor *psu_low_voltage_sensor{nullptr};     ///< Low-voltage supply rail sensor (V).
   sensor::Sensor *processor_load_sensor{nullptr};      ///< DSP processor load sensor (%).
   text_sensor::TextSensor *dip_switch_status_sensor{nullptr}; ///< Decoded current DIP switch positions.
+  binary_sensor::BinarySensor *protection_sensor{nullptr}; ///< Reported protection state.
+  binary_sensor::BinarySensor *clipping_sensor{nullptr};   ///< Clipping reported in the current poll cycle.
 };
 
 /// @brief Represents a single Genelec SAM monitor or subwoofer discovered on the RS-485 bus.
@@ -159,8 +161,14 @@ struct GenSAMMonitor {
   bool output_midrange_known{false}; ///< True once a tag 0x44 meter value is reported.
   bool output_woofer_known{false};   ///< True once a tag 0x45 meter value is reported.
   std::vector<uint8_t> last_telemetry_events; ///< One-byte event tags in the latest telemetry frame.
-  bool protection_active{false};     ///< Last state from protection-started/ended event tags.
-  bool protection_known{false};      ///< True after a protection event has been reported.
+  /// Set by protection-started, cleared by protection-ended. The speaker reports only these
+  /// transitions, never the steady state, so "no report" is taken to mean "not protecting".
+  /// Cleared when the monitor goes offline, since a start sent while offline cannot be seen.
+  bool protection_active{false};
+  /// True when a clipping event arrived since the last primary report (the one carrying the
+  /// 0x41 temperature record). Continuation frames add to it rather than clear it, so a clip
+  /// reported in the first half of a split reply is not erased by the second half.
+  bool clipping_active{false};
   bool digital_input_available{false}; ///< Last digital-input availability event.
   bool digital_input_known{false};   ///< True after a digital-input event has been reported.
   float tw_coil_temperature{NAN};   ///< Modelled tweeter voice-coil temperature (°C, tag 0x81); NAN until reported.
@@ -237,7 +245,9 @@ bool parse_barcode(const uint8_t *data, size_t len, GenSAMMonitor &monitor);
 /// standby_known and set standby_transition until another stable report arrives. A reply may
 /// contain one-byte events before, between, or after data records. They update
 /// last_telemetry_events and their corresponding state fields but never affect standby; only tag
-/// 0x47 reports power state.
+/// 0x47 reports power state. Bytes in fixed-offset legacy payloads are not interpreted as events.
+/// A payload carrying the 0x41 record, or a legacy payload, starts a new poll cycle and clears
+/// clipping_active before this frame's clipping events are applied.
 /// @param data Pointer to raw unescaped payload buffer.
 /// @param len Payload length in bytes.
 /// @param[out] monitor Target monitor struct to update with temperature, signal levels, and standby state.

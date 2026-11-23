@@ -142,6 +142,7 @@ bool parse_barcode(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
 }
 
 bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
+  monitor.last_telemetry_events.clear();
   if (data == nullptr || len == 0) {
     return false;
   }
@@ -150,8 +151,6 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   // after data records, so process them in the same scan rather than treating them as framing.
   const uint8_t *tlv_data = data;
   const size_t tlv_len = len;
-  monitor.last_telemetry_events.clear();
-
   // Tags:
   //   0x41: Amp/DSP Temperature (°C)
   //   0x42: Input Signal Level, pre-volume (signed int8 dBFS)
@@ -177,26 +176,15 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   bool found_tag = false;
   bool found_data_tag = false;
   bool only_event_tags = true;
+  bool primary_report = false;
   for (size_t i = 0; i < tlv_len; i++) {
     uint8_t tag = tlv_data[i];
     if (is_telemetry_event_tag(tag)) {
       monitor.last_telemetry_events.push_back(tag);
-      if (tag == TELEMETRY_EVENT_PROTECTION_STARTED) {
-        monitor.protection_active = true;
-        monitor.protection_known = true;
-      } else if (tag == TELEMETRY_EVENT_PROTECTION_ENDED) {
-        monitor.protection_active = false;
-        monitor.protection_known = true;
-      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_UNAVAILABLE) {
-        monitor.digital_input_available = false;
-        monitor.digital_input_known = true;
-      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_AVAILABLE) {
-        monitor.digital_input_available = true;
-        monitor.digital_input_known = true;
-      }
       found_tag = true;
     } else if (tag == 0x41 && i + 1 < tlv_len) {  // 'A' = Temperature
       monitor.temperature = static_cast<int8_t>(tlv_data[i + 1]);
+      primary_report = true;
       found_tag = true;
       found_data_tag = true;
       only_event_tags = false;
@@ -306,17 +294,36 @@ bool parse_telemetry(const uint8_t *data, size_t len, GenSAMMonitor &monitor) {
   }
 
   if (found_data_tag || (found_tag && (only_event_tags || tlv_len < 13))) {
+    if (primary_report) {
+      monitor.clipping_active = false;
+    }
+    for (uint8_t tag : monitor.last_telemetry_events) {
+      if (tag == TELEMETRY_EVENT_PROTECTION_STARTED) {
+        monitor.protection_active = true;
+      } else if (tag == TELEMETRY_EVENT_PROTECTION_ENDED) {
+        monitor.protection_active = false;
+      } else if (tag == TELEMETRY_EVENT_CLIPPING) {
+        monitor.clipping_active = true;
+      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_UNAVAILABLE) {
+        monitor.digital_input_available = false;
+        monitor.digital_input_known = true;
+      } else if (tag == TELEMETRY_EVENT_DIGITAL_INPUT_AVAILABLE) {
+        monitor.digital_input_available = true;
+        monitor.digital_input_known = true;
+      }
+    }
     return true;
   }
 
+  monitor.last_telemetry_events.clear();
+  monitor.clipping_active = false;
   // Format A: Fixed byte offsets from CID_POLL (genlc / standard RACE)
   // Byte 1: Temperature (deg C)
   // Byte 6: Input level (dBFS)
   // Byte 12: Output level (dBFS)
   //
   // Deliberately reads raw data/len, not a cursor advanced by the TLV scan: these offsets are
-  // absolute, and a leading one-byte event must not shift them. Format A carries no power field,
-  // which is why standby is left untouched below.
+  // absolute. Bytes in this format are not event tags, and it carries no power field.
   if (len >= 7) {
     monitor.temperature = static_cast<int8_t>(data[1]);
     monitor.input_db = static_cast<int8_t>(data[6]);

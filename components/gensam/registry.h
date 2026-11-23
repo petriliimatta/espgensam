@@ -135,6 +135,14 @@ class MonitorRegistry {
   /// @brief Publish temperature, input level, output level, and online state to bound sensors.
   /// @param mon The monitor whose telemetry to publish.
   void publish_telemetry(const GenSAMMonitor &mon);
+  /// @brief Publish the protection and clipping states; both read off unless reported active.
+  /// @param mon The monitor whose telemetry events to publish.
+  void publish_telemetry_events(const GenSAMMonitor &mon);
+  /// @brief Publish off for every bound protection and clipping sensor at boot.
+  ///
+  /// No report yet means no protection or clipping, so the sensors start off rather than
+  /// unknown. Only an offline monitor or stale telemetry makes them unknown later.
+  void publish_initial_telemetry_events();
   /// @brief Publish the monitor's decoded DIP switch positions to its diagnostic text sensor.
   /// @param mon The monitor whose DIP status to publish.
   void publish_dip_switch_status(const GenSAMMonitor &mon);

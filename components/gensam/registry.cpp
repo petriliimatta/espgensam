@@ -63,6 +63,22 @@ const char *model_or(const GenSAMMonitor &mon, const char *fallback) {
   return mon.model.empty() ? fallback : mon.model.c_str();
 }
 
+/// Forget protection/clipping state and show it unknown: transitions sent while the monitor was
+/// unreachable are lost, so the last known state cannot be trusted.
+void invalidate_protection(GenSAMMonitor &mon) {
+  mon.protection_active = false;
+  mon.clipping_active = false;
+  if (mon.binding == nullptr) {
+    return;
+  }
+  if (mon.binding->protection_sensor != nullptr) {
+    mon.binding->protection_sensor->invalidate_state();
+  }
+  if (mon.binding->clipping_sensor != nullptr) {
+    mon.binding->clipping_sensor->invalidate_state();
+  }
+}
+
 }  // namespace
 
 GenSAMMonitor &MonitorRegistry::get_or_create(uint8_t address) {
@@ -205,6 +221,7 @@ bool MonitorRegistry::expire_stale(uint32_t now, uint32_t stale_timeout_ms) {
       continue;
     }
     mon.online = false;
+    invalidate_protection(mon);
     this->publish_online(mon);
     ESP_LOGW(TAG, "[0x%02X %s] Monitor went offline (no response for %u ms)",
              mon.address, model_or(mon, "(unknown)"), (unsigned)(now - mon.last_seen_ms));
@@ -217,6 +234,7 @@ void MonitorRegistry::invalidate_all() {
   for (auto &kv : monitors_) {
     kv.second.online = false;
     kv.second.last_seen_ms = 0;
+    invalidate_protection(kv.second);
     this->publish_online(kv.second);
   }
 }
@@ -225,6 +243,7 @@ void MonitorRegistry::mark_all_offline() {
   for (auto &kv : monitors_) {
     if (kv.second.online) {
       kv.second.online = false;
+      invalidate_protection(kv.second);
       this->publish_online(kv.second);
     }
   }
@@ -289,7 +308,27 @@ void MonitorRegistry::publish_telemetry(const GenSAMMonitor &mon) {
       entry.first->publish_state(entry.second);
     }
   }
+  this->publish_telemetry_events(mon);
   this->publish_online(mon);
+}
+
+void MonitorRegistry::publish_telemetry_events(const GenSAMMonitor &mon) {
+  if (mon.binding == nullptr) {
+    return;
+  }
+  if (mon.binding->protection_sensor != nullptr) {
+    mon.binding->protection_sensor->publish_state(mon.protection_active);
+  }
+  if (mon.binding->clipping_sensor != nullptr) {
+    mon.binding->clipping_sensor->publish_state(mon.clipping_active);
+  }
+}
+
+void MonitorRegistry::publish_initial_telemetry_events() {
+  for (auto &binding : bindings_) {
+    if (binding.protection_sensor != nullptr) binding.protection_sensor->publish_state(false);
+    if (binding.clipping_sensor != nullptr) binding.clipping_sensor->publish_state(false);
+  }
 }
 
 void MonitorRegistry::publish_dip_switch_status(const GenSAMMonitor &mon) {
@@ -307,6 +346,10 @@ void MonitorRegistry::publish_online(const GenSAMMonitor &mon) {
 }
 
 void MonitorRegistry::publish_stale_telemetry() {
+  for (auto &entry : monitors_) {
+    entry.second.protection_active = false;
+    entry.second.clipping_active = false;
+  }
   for (auto &binding : bindings_) {
     if (binding.temperature_sensor != nullptr) binding.temperature_sensor->publish_state(NAN);
     if (binding.input_level_sensor != nullptr) binding.input_level_sensor->publish_state(NAN);
@@ -317,6 +360,8 @@ void MonitorRegistry::publish_stale_telemetry() {
       if (s != nullptr) s->publish_state(NAN);
     }
     if (binding.online_sensor != nullptr) binding.online_sensor->invalidate_state();
+    if (binding.protection_sensor != nullptr) binding.protection_sensor->invalidate_state();
+    if (binding.clipping_sensor != nullptr) binding.clipping_sensor->invalidate_state();
   }
 }
 

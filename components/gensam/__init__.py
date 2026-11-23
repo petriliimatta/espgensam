@@ -77,6 +77,8 @@ CONF_TEMPERATURE = "temperature"
 CONF_INPUT_LEVEL = "input_level"
 CONF_OUTPUT_LEVEL = "output_level"
 CONF_ONLINE = "online"
+CONF_PROTECTION = "protection"
+CONF_CLIPPING = "clipping"
 CONF_MUTE = "mute"
 CONF_IDENTIFY = "identify"
 
@@ -349,7 +351,6 @@ def _validate_monitor(conf):
             accuracy_decimals=0,
             device_class=DEVICE_CLASS_TEMPERATURE,
             state_class=STATE_CLASS_MEASUREMENT,
-            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )(c)
 
     for key, (suffix, *_rest) in EXTENDED_TELEMETRY_SENSORS.items():
@@ -367,7 +368,6 @@ def _validate_monitor(conf):
             unit_of_measurement="dBFS",
             accuracy_decimals=0,
             state_class=STATE_CLASS_MEASUREMENT,
-            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )(c)
 
     if CONF_OUTPUT_LEVEL not in conf:
@@ -378,7 +378,6 @@ def _validate_monitor(conf):
             unit_of_measurement="dBFS",
             accuracy_decimals=0,
             state_class=STATE_CLASS_MEASUREMENT,
-            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )(c)
 
     if CONF_ONLINE not in conf:
@@ -390,6 +389,23 @@ def _validate_monitor(conf):
             entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
         )(c)
 
+    if CONF_PROTECTION not in conf:
+        c = {CONF_NAME: f"{prefix}Protection"}
+        if dev_id:
+            c[CONF_DEVICE_ID] = dev_id
+        conf[CONF_PROTECTION] = binary_sensor.binary_sensor_schema(
+            device_class=DEVICE_CLASS_PROBLEM,
+        )(c)
+
+    if CONF_CLIPPING not in conf:
+        c = {CONF_NAME: f"{prefix}Clipping"}
+        if dev_id:
+            c[CONF_DEVICE_ID] = dev_id
+        conf[CONF_CLIPPING] = binary_sensor.binary_sensor_schema(
+            device_class=DEVICE_CLASS_PROBLEM,
+            icon="mdi:waveform",
+        )(c)
+
     if CONF_MUTE not in conf:
         c = {CONF_NAME: f"{prefix}Mute"}
         if dev_id:
@@ -397,7 +413,6 @@ def _validate_monitor(conf):
         conf[CONF_MUTE] = switch.switch_schema(
             GenSAMMuteSwitch,
             icon="mdi:volume-off",
-            entity_category=ENTITY_CATEGORY_CONFIG,
         )(c)
 
     if CONF_IDENTIFY not in conf:
@@ -407,7 +422,7 @@ def _validate_monitor(conf):
         conf[CONF_IDENTIFY] = button.button_schema(
             GenSAMIdentifyButton,
             device_class=DEVICE_CLASS_IDENTIFY,
-            entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+            entity_category=ENTITY_CATEGORY_CONFIG,
         )(c)
 
     if CONF_MODEL not in conf:
@@ -477,7 +492,6 @@ def _validate_monitor(conf):
             GenSAMLevelNumber,
             icon="mdi:tune-vertical",
             unit_of_measurement="dB",
-            entity_category=ENTITY_CATEGORY_CONFIG,
         )(c)
 
     if CONF_DELAY_MS not in conf:
@@ -505,7 +519,6 @@ def _validate_monitor(conf):
             conf[CONF_INPUT] = select.select_schema(
                 GenSAMInputSelect,
                 icon="mdi:audio-input-xlr",
-                entity_category=ENTITY_CATEGORY_CONFIG,
             )(c)
         elif isinstance(val, dict) and "initial" in val:
             conf[CONF_INITIAL_INPUT] = val.pop("initial")
@@ -516,7 +529,6 @@ def _validate_monitor(conf):
         conf[CONF_INPUT] = select.select_schema(
             GenSAMInputSelect,
             icon="mdi:audio-input-xlr",
-            entity_category=ENTITY_CATEGORY_CONFIG,
         )(c)
 
     return conf
@@ -536,7 +548,6 @@ MONITOR_SCHEMA = cv.All(
                 accuracy_decimals=0,
                 device_class=DEVICE_CLASS_TEMPERATURE,
                 state_class=STATE_CLASS_MEASUREMENT,
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
             **{
                 cv.Optional(key): _extended_telemetry_schema(key)
@@ -546,28 +557,32 @@ MONITOR_SCHEMA = cv.All(
                 unit_of_measurement="dBFS",
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
             cv.Optional(CONF_OUTPUT_LEVEL): sensor.sensor_schema(
                 unit_of_measurement="dBFS",
                 accuracy_decimals=0,
                 state_class=STATE_CLASS_MEASUREMENT,
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
             cv.Optional(CONF_ONLINE): binary_sensor.binary_sensor_schema(
                 device_class=DEVICE_CLASS_CONNECTIVITY,
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
             ),
+            cv.Optional(CONF_PROTECTION): binary_sensor.binary_sensor_schema(
+                device_class=DEVICE_CLASS_PROBLEM,
+            ),
+            cv.Optional(CONF_CLIPPING): binary_sensor.binary_sensor_schema(
+                device_class=DEVICE_CLASS_PROBLEM,
+                icon="mdi:waveform",
+            ),
             cv.Optional(CONF_MUTE): switch.switch_schema(
                 GenSAMMuteSwitch,
                 icon="mdi:volume-off",
-                entity_category=ENTITY_CATEGORY_CONFIG,
             ),
             cv.Optional(CONF_CALIBRATION_BYPASS): MONITOR_CALIBRATION_BYPASS_SCHEMA,
             cv.Optional(CONF_IDENTIFY): button.button_schema(
                 GenSAMIdentifyButton,
                 device_class=DEVICE_CLASS_IDENTIFY,
-                entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
+                entity_category=ENTITY_CATEGORY_CONFIG,
             ),
             cv.Optional(CONF_MODEL): text_sensor.text_sensor_schema(
                 entity_category=ENTITY_CATEGORY_DIAGNOSTIC,
@@ -593,7 +608,6 @@ MONITOR_SCHEMA = cv.All(
                 GenSAMLevelNumber,
                 icon="mdi:tune-vertical",
                 unit_of_measurement="dB",
-                entity_category=ENTITY_CATEGORY_CONFIG,
             ),
             cv.Optional(CONF_DELAY_MS): number.number_schema(
                 GenSAMDelayNumber,
@@ -609,7 +623,6 @@ MONITOR_SCHEMA = cv.All(
                 select.select_schema(
                     GenSAMInputSelect,
                     icon="mdi:audio-input-xlr",
-                    entity_category=ENTITY_CATEGORY_CONFIG,
                 ),
             ),
         }
@@ -622,15 +635,17 @@ DISCOVERY_SLOT_SETTINGS_SCHEMA = web_server.WEBSERVER_SORTING_SCHEMA.extend({
     cv.Optional(CONF_DEVICE_ID): cv.sub_device_id,
 })
 
-MONITOR_DIAGNOSTICS = (
-    CONF_ONLINE, CONF_INPUT_LEVEL, CONF_OUTPUT_LEVEL, CONF_TEMPERATURE, CONF_MODEL,
-    CONF_SERIAL_NUMBER_SENSOR, CONF_FIRMWARE_VERSION, CONF_HARDWARE_ID, CONF_IDENTIFY,
-    CONF_DIP_SWITCH_STATUS, CONF_SAM_NAME_SENSOR, *EXTENDED_TELEMETRY_SENSORS,
-)
-
-MONITOR_CONTROLS = (
-    CONF_MUTE, CONF_INPUT, CONF_CALIBRATION_BYPASS, CONF_BASS_MANAGEMENT_CROSSOVER_FREQUENCY,
-    CONF_LEVEL_DB, CONF_DELAY_MS,
+# Per-monitor entities in web card order: identity first, then everyday controls, live status
+# and levels, setup, detailed telemetry.
+MONITOR_WEB_ORDER = (
+    CONF_SAM_NAME_SENSOR, CONF_MODEL, CONF_FIRMWARE_VERSION, CONF_SERIAL_NUMBER_SENSOR,
+    CONF_HARDWARE_ID, CONF_DIP_SWITCH_STATUS,
+    CONF_MUTE, CONF_LEVEL_DB, CONF_INPUT,
+    CONF_ONLINE, CONF_PROTECTION, CONF_CLIPPING,
+    CONF_INPUT_LEVEL, CONF_OUTPUT_LEVEL, CONF_TEMPERATURE,
+    CONF_DELAY_MS, CONF_BASS_MANAGEMENT_CROSSOVER_FREQUENCY, CONF_CALIBRATION_BYPASS,
+    CONF_IDENTIFY,
+    *EXTENDED_TELEMETRY_SENSORS,
 )
 
 MONITOR_WEB_GROUP_BASE_WEIGHT = 0
@@ -645,11 +660,11 @@ def _monitor_web_cards(config):
     configured.
 
     Returns (group_key, group_name, group_weight, [(entity_id, entity_weight), ...]) tuples,
-    controls first and diagnostics after, in MONITOR_CONTROLS + MONITOR_DIAGNOSTICS order.
+    in MONITOR_WEB_ORDER.
     """
     cards = []
     for index, mon_conf in enumerate(config.get(CONF_MONITORS, [])):
-        keys = [k for k in MONITOR_CONTROLS + MONITOR_DIAGNOSTICS if k in mon_conf]
+        keys = [k for k in MONITOR_WEB_ORDER if k in mon_conf]
         if any("web_server" in mon_conf[k] for k in keys):
             continue
         entities = [(mon_conf[k][CONF_ID], 10 * (n + 1)) for n, k in enumerate(keys)]
@@ -892,13 +907,12 @@ def _validate_hub(config):
         mon_conf = config[CONF_MONITORS][slot - 1]
         web_settings = settings["web_server"]
         base_weight = web_settings.get(web_server.CONF_SORTING_WEIGHT, 50)
-        entities = MONITOR_CONTROLS + MONITOR_DIAGNOSTICS
-        for index, key in enumerate(entities):
+        for index, key in enumerate(MONITOR_WEB_ORDER):
             if key not in mon_conf:
                 continue
             entity_web_settings = copy.deepcopy(web_settings)
             entity_web_settings[web_server.CONF_SORTING_WEIGHT] = (
-                base_weight + 10 * (index - len(MONITOR_CONTROLS))
+                base_weight + 10 * index
             )
             mon_conf[key]["web_server"] = entity_web_settings
 
@@ -1286,6 +1300,8 @@ async def to_code(config):
 
             # 4. Online status binary sensor
             online_sens = await binary_sensor.new_binary_sensor(mon_conf[CONF_ONLINE])
+            protection_sens = await binary_sensor.new_binary_sensor(mon_conf[CONF_PROTECTION])
+            clipping_sens = await binary_sensor.new_binary_sensor(mon_conf[CONF_CLIPPING])
 
             # 5. Mute switch
             mute_sw = await switch.new_switch(mon_conf[CONF_MUTE])
@@ -1387,7 +1403,8 @@ async def to_code(config):
                         f"{'true' if configured else 'false'}, {design_rate}U, "
                         f"{bypass_sw}, false, "
                         f"{'true' if discovery_slot else 'false'}, {sam_name_sens}, "
-                        f"{', '.join(ext_sens)}, {dip_status_sens}}}"
+                        f"{', '.join(ext_sens)}, {dip_status_sens}, "
+                        f"{protection_sens}, {clipping_sens}}}"
                     )
                 )
             )
