@@ -74,7 +74,7 @@
 ///
 /// 8. ISS Sleep Delay & Sensitivity (GenSAMIssSleepDelaySelect, GenSAMIssSensitivitySelect):
 ///    System-wide overrides, volatile until explicit store, offered as GLM's own menu plus
-///    "Speaker default". iss.h holds the options; hub.h section 7 covers their safe-slot writes.
+///    "Unknown" until all monitors agree. iss.h holds the options; hub.h section 7 covers writes.
 /// ===================================================================================
 
 #include "esphome/core/component.h"
@@ -183,12 +183,18 @@ class GenSAMIssSleepDelaySelect : public select::Select {
   void control(const std::string &value) override {
     uint32_t minutes;
     if (hub_ == nullptr || !iss_option_value(ISS_SLEEP_DELAY_OPTIONS, value.c_str(), minutes)) {
+      ESP_LOGW("gensam", "Cannot set ISS sleep delay: unknown option");
+      return;
+    }
+    if (value == ISS_STR_UNKNOWN) {
+      ESP_LOGW("gensam", "Unknown is a read-only ISS state");
+      const auto current = this->active_index();
+      if (current.has_value()) this->publish_state(*current);
       return;
     }
     hub_->set_iss_sleep_delay(minutes);
-    // Publish what the hub holds, so a rejected request leaves the old value showing.
-    const char *name = iss_option_name(ISS_SLEEP_DELAY_OPTIONS, hub_->get_iss_sleep_delay());
-    this->publish_state(name != nullptr ? name : ISS_STR_SPEAKER_DEFAULT);
+    const auto current = this->active_index();
+    if (current.has_value() && current != this->index_of(value)) this->publish_state(*current);
   }
 
   GenSAMHub *hub_{nullptr};
@@ -207,11 +213,18 @@ class GenSAMIssSensitivitySelect : public select::Select {
   void control(const std::string &value) override {
     int32_t dbu;
     if (hub_ == nullptr || !iss_option_value(ISS_THRESHOLD_OPTIONS, value.c_str(), dbu)) {
+      ESP_LOGW("gensam", "Cannot set ISS sensitivity: unknown option");
+      return;
+    }
+    if (value == ISS_STR_UNKNOWN) {
+      ESP_LOGW("gensam", "Unknown is a read-only ISS state");
+      const auto current = this->active_index();
+      if (current.has_value()) this->publish_state(*current);
       return;
     }
     hub_->set_iss_threshold(dbu);
-    const char *name = iss_option_name(ISS_THRESHOLD_OPTIONS, hub_->get_iss_threshold());
-    this->publish_state(name != nullptr ? name : ISS_STR_SPEAKER_DEFAULT);
+    const auto current = this->active_index();
+    if (current.has_value() && current != this->index_of(value)) this->publish_state(*current);
   }
 
   GenSAMHub *hub_{nullptr};

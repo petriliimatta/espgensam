@@ -46,6 +46,7 @@ struct GenSAMMonitor {
   uint8_t address{2};
   uint32_t unique_id{123};
   bool online{true}, mute{false}, system_leds_known{true}, system_leds_enabled{true};
+  bool led_gate_known{false}, led_gate_enabled{true};
   Binding *binding{nullptr};
   bool is_subwoofer() const { return false; }
 };
@@ -102,6 +103,7 @@ class GenSAMHub {
   bool resuming_{false}, power_off_pending_{false}, initial_discovery_done_{true}, available{true};
   bool volume_tx_pending_{false}, mute_tx_pending_{false}, system_led_tx_pending_{false};
   bool iss_tx_pending_{false}, filter_bypass_tx_pending_{false}, phase_correction_bypass_{false};
+  bool iss_delay_confirmation_pending_{false}, iss_threshold_confirmation_pending_{false};
   bool system_led_state_known_{false}, current_system_leds_enabled_{true}, bypass{false};
   bool calibration_bypass_{false}, current_mute_{false};
   uint32_t iss_sleep_delay_{ISS_SLEEP_DELAY_DEFAULT};
@@ -293,21 +295,25 @@ int main() {
   GenSAMHub reset;
   reset.iss_sleep_delay_ = 2;
   reset.iss_threshold_ = -61;
+  reset.iss_delay_confirmation_pending_ = reset.iss_threshold_confirmation_pending_ = true;
   reset.current_mute_ = reset.phase_correction_bypass_ = true;
   reset.reset_volatile_settings_();
   assert(reset.iss_sleep_delay_ == ISS_SLEEP_DELAY_DEFAULT && !reset.current_mute_ &&
-         !reset.phase_correction_bypass_);
+         !reset.phase_correction_bypass_ && !reset.iss_delay_confirmation_pending_ &&
+         !reset.iss_threshold_confirmation_pending_);
   reset.iss_sleep_delay_ = 10;
   reset.iss_threshold_ = -75;
   reset.current_system_leds_enabled_ = false;
   reset.current_mute_ = reset.phase_correction_bypass_ = true;
   reset.iss_tx_pending_ = reset.system_led_tx_pending_ = reset.filter_bypass_tx_pending_ =
       reset.mute_tx_pending_ = true;
+  reset.iss_delay_confirmation_pending_ = reset.iss_threshold_confirmation_pending_ = true;
   reset.reset_volatile_settings_();
   assert(reset.iss_sleep_delay_ == 10 && reset.iss_threshold_ == -75 &&
          reset.current_mute_ && reset.phase_correction_bypass_ && !reset.current_system_leds_enabled_);
   assert(reset.iss_tx_pending_ && reset.system_led_tx_pending_ && reset.filter_bypass_tx_pending_ &&
-         reset.mute_tx_pending_);
+         reset.mute_tx_pending_ && reset.iss_delay_confirmation_pending_ &&
+         reset.iss_threshold_confirmation_pending_);
   std::cout << "Speaker store serialization, readback, safety and partial-failure checks passed\n";
 }
 '''

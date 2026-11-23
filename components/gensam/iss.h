@@ -20,11 +20,9 @@
 ///    A 3A 01 delay write takes effect without the store (verified on 8351B firmware 1.24).
 ///
 /// 2. Select, not number. GLM offers a fixed menu - seven delays plus Never, three named
-///    sensitivities - and the options here are that menu. Each select also has
-///    ISS_STR_SPEAKER_DEFAULT, which stops overriding. Choosing it sends nothing; the speaker
-///    returns to its own setting at its next restart/profile reload, and hub-managed sleep reads it
-///    back from each speaker instead of assuming one. A value of 0 means "no override" in both conversions below: no menu
-///    entry uses a zero delay, and 0 dBu is far outside the usable −80…−35 dBu range.
+///    sensitivities - and the options here are that menu. Unknown is a read-only placeholder
+///    when the speakers have not all reported the same representable value. The internal zero
+///    sentinels mean "no override" and are never transmitted.
 ///
 /// 3. Kept apart from const.h and select.h for the same reason as crossover.h: option strings
 ///    are presentation, and the hub needs them without referencing an entity type.
@@ -39,14 +37,17 @@
 namespace esphome {
 namespace gensam {
 
-/// Option string shared by both selects: do not override the speaker's own setting.
-static constexpr const char *ISS_STR_SPEAKER_DEFAULT = "Speaker default";
+/// Read-only placeholder when no common selectable value is known.
+static constexpr const char *ISS_STR_UNKNOWN = "Unknown";
 
 /// Sleep delay value meaning "no override".
 static constexpr uint32_t ISS_SLEEP_DELAY_DEFAULT = 0;
 
 /// Threshold value meaning "no override".
 static constexpr int32_t ISS_THRESHOLD_DEFAULT = 0;
+
+/// Readback values at or above this delay represent Never.
+static constexpr uint32_t ISS_READ_NEVER_MIN = 65535;
 
 /// @brief One select option and the wire value it stands for.
 template<typename T> struct IssOption {
@@ -56,7 +57,7 @@ template<typename T> struct IssOption {
 
 /// Sleep delay options in display order; __init__.py must list the same strings.
 static constexpr IssOption<uint32_t> ISS_SLEEP_DELAY_OPTIONS[] = {
-    {ISS_STR_SPEAKER_DEFAULT, ISS_SLEEP_DELAY_DEFAULT},
+    {ISS_STR_UNKNOWN, ISS_SLEEP_DELAY_DEFAULT},
     {"2 min", 2},
     {"10 min", 10},
     {"30 min", 30},
@@ -69,7 +70,7 @@ static constexpr IssOption<uint32_t> ISS_SLEEP_DELAY_OPTIONS[] = {
 
 /// Sensitivity options in display order; __init__.py must list the same strings.
 static constexpr IssOption<int32_t> ISS_THRESHOLD_OPTIONS[] = {
-    {ISS_STR_SPEAKER_DEFAULT, ISS_THRESHOLD_DEFAULT},
+    {ISS_STR_UNKNOWN, ISS_THRESHOLD_DEFAULT},
     {"Low (-61 dBu)", ISS_THRESHOLD_LOW_DBU},
     {"Medium (-68 dBu)", ISS_THRESHOLD_MEDIUM_DBU},
     {"High (-75 dBu)", ISS_THRESHOLD_HIGH_DBU},

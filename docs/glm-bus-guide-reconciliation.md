@@ -124,8 +124,10 @@ The guide's ISS encodings (guide §11.2) match this project's own store capture
 The guide also gives the missing disabled ("Never") encoding and the remaining menu values.
 
 **Implemented as volatile edits with explicit storage.** The hub exposes two selects, **ISS Sleep Delay** and **ISS
-Sensitivity**. Each offers GLM's menu plus *Speaker default*. The values are broadcast, as GLM
-sends them, but only the explicit **Store Settings to Speakers** action sends `15 33 00`. A store writes the
+Sensitivity**. Each shows the common speaker readback, or **Unknown** when values differ,
+are unavailable, or fall outside the menu. A new selection remains visible while readback is pending.
+Selecting a menu value broadcasts it, as GLM sends it, but only the explicit
+**Store Settings to Speakers** action sends `15 33 00`. A store writes the
 speaker's entire working state into its start-up profile, including whatever calibration a
 group push left there.
 
@@ -152,8 +154,8 @@ The consequence follows from how the speakers behave. A speaker loses its runtim
 when it wakes from ISS sleep or standby (guide §8.1 describes this as a restart; the README
 already notes the lost settings). The hub now discards applied overrides at rediscovery and
 does not reapply a preset on wake. Only master volume is remembered by the controller.
-Choosing *Speaker default* stops sending, and the speaker returns to its stored value at its
-next restart/profile reload. Profile-0 restore (`15 34 00`) and stored LED readback (`3A 86`)
+On restart/profile reload the speaker returns to its stored value, which is read again.
+Profile-0 restore (`15 34 00`) and stored LED readback (`3A 86`)
 are documented/protocol-derived additions, not yet hardware-verified. User-note tags identify
 known catalog settings, not complete independent DSP readback; unobserved external uploads
 retaining old notes can leave stale identity.

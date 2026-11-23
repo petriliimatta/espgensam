@@ -149,14 +149,7 @@ void GenSAMHub::setup() {
   if (phase_correction_bypass_switch_ != nullptr) {
     phase_correction_bypass_switch_->publish_state(phase_correction_bypass_);
   }
-  if (iss_sleep_delay_select_ != nullptr) {
-    const char *name = iss_option_name(ISS_SLEEP_DELAY_OPTIONS, iss_sleep_delay_);
-    iss_sleep_delay_select_->publish_state(name != nullptr ? name : ISS_STR_SPEAKER_DEFAULT);
-  }
-  if (iss_threshold_select_ != nullptr) {
-    const char *name = iss_option_name(ISS_THRESHOLD_OPTIONS, iss_threshold_);
-    iss_threshold_select_->publish_state(name != nullptr ? name : ISS_STR_SPEAKER_DEFAULT);
-  }
+  this->publish_iss_settings_();
 
   this->update_bus_status_();
 
@@ -269,8 +262,8 @@ void GenSAMHub::reset_volatile_settings_() {
   if (!iss_tx_pending_) {
     iss_sleep_delay_ = ISS_SLEEP_DELAY_DEFAULT;
     iss_threshold_ = ISS_THRESHOLD_DEFAULT;
-    if (iss_sleep_delay_select_ != nullptr) iss_sleep_delay_select_->publish_state("Speaker default");
-    if (iss_threshold_select_ != nullptr) iss_threshold_select_->publish_state("Speaker default");
+    iss_delay_confirmation_pending_ = false;
+    iss_threshold_confirmation_pending_ = false;
   }
   calibration_bypass_ = false;
   if (!filter_bypass_tx_pending_) phase_correction_bypass_ = false;
@@ -724,6 +717,11 @@ void GenSAMHub::check_glm_cooldown_() {
 
 void GenSAMHub::mark_monitor_seen_(GenSAMMonitor &mon) {
   if (registry_.mark_seen(mon)) {
+    mon.iss_stored_delay_known = false;
+    mon.iss_stored_threshold_known = false;
+    mon.iss_read_sent = false;
+    mon.iss_level_read_due = false;
+    mon.led_gate_known = false;
     this->evaluate_system_mute_();
   }
 }
@@ -877,6 +875,7 @@ void GenSAMHub::set_system_leds_enabled(bool enabled) {
 
   current_system_leds_enabled_ = enabled;
   system_led_tx_pending_ = true;
+  for (auto &kv : registry_.monitors()) kv.second.led_gate_known = false;
   ESP_LOGD(TAG, "Monitor LED request accepted: %s", YESNO(enabled));
 }
 
@@ -887,9 +886,14 @@ void GenSAMHub::set_iss_sleep_delay(uint32_t minutes) {
     return;
   }
   iss_sleep_delay_ = minutes;
-  // "Speaker default" sends nothing, but a pending threshold must still go out.
   iss_tx_pending_ = iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT ||
                     iss_threshold_ != ISS_THRESHOLD_DEFAULT;
+  iss_delay_confirmation_pending_ = minutes != ISS_SLEEP_DELAY_DEFAULT;
+  const char *name = iss_option_name(ISS_SLEEP_DELAY_OPTIONS, minutes);
+  if (iss_delay_confirmation_pending_ && name != nullptr && iss_sleep_delay_select_ != nullptr) {
+    iss_display_delay_ = name;
+    iss_sleep_delay_select_->publish_state(name);
+  }
   ESP_LOGD(TAG, "ISS sleep delay request accepted: %u min", (unsigned) minutes);
 }
 
@@ -902,6 +906,12 @@ void GenSAMHub::set_iss_threshold(int32_t dbu) {
   iss_threshold_ = dbu;
   iss_tx_pending_ = iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT ||
                     iss_threshold_ != ISS_THRESHOLD_DEFAULT;
+  iss_threshold_confirmation_pending_ = dbu != ISS_THRESHOLD_DEFAULT;
+  const char *name = iss_option_name(ISS_THRESHOLD_OPTIONS, dbu);
+  if (iss_threshold_confirmation_pending_ && name != nullptr && iss_threshold_select_ != nullptr) {
+    iss_display_threshold_ = name;
+    iss_threshold_select_->publish_state(name);
+  }
   ESP_LOGD(TAG, "ISS sensitivity request accepted: %d dBu", (int) dbu);
 }
 
@@ -1014,43 +1024,120 @@ void GenSAMHub::transmit_system_leds_() {
   }
 
   const bool enabled = current_system_leds_enabled_;
-  bool transmitted = true;
   for (auto &kv : registry_.monitors()) {
-    if (!this->send_frame_twice(make_bypass_led_state(kv.first, kv.second.mute, enabled))) {
-      transmitted = false;
+    GenSAMMonitor &mon = kv.second;
+    if (mon.led_gate_known && mon.led_gate_enabled == enabled &&
+        mon.system_leds_known && mon.system_leds_enabled == enabled &&
+        mon.identify_end_ms == 0 && !mon.identify_restore_led_disable) {
       continue;
     }
-    if (!kv.second.system_leds_known || kv.second.system_leds_enabled != enabled) {
-      speaker_settings_[kv.second.unique_id].modified = true;
-      speaker_settings_[kv.second.unique_id].dirty = true;
-      note_update_requested_ = true;
-      this->set_store_status_("Unsaved changes");
+    if (!this->start_led_command_(mon, enabled, millis(), true)) {
+      ESP_LOGW(TAG, "Cannot transmit LED gate for monitor 0x%02X; will retry", mon.address);
     }
-    kv.second.system_leds_enabled = enabled;
-    kv.second.system_leds_known = true;
+    return;
   }
 
-  if (transmitted) {
-    system_led_tx_pending_ = false;
-    this->commit_system_led_state_(enabled);
-    this->publish_active_settings_();
-    ESP_LOGI(TAG, "Set live monitor LEDs %s across %zu monitors", YESNO(enabled), registry_.size());
-  } else {
-    ESP_LOGW(TAG, "Monitor LED setting was only partially transmitted; it will be retried");
-  }
+  system_led_tx_pending_ = false;
+  this->commit_system_led_state_(enabled);
+  this->publish_active_settings_();
+  ESP_LOGI(TAG, "Set live monitor LEDs %s across %zu monitors", YESNO(enabled), registry_.size());
+}
+
+void GenSAMHub::fail_system_leds_(uint8_t address, const char *reason) {
+  system_led_tx_pending_ = false;
+  system_led_state_known_ = false;
+  for (auto &callback : system_led_state_callbacks_) callback(current_system_leds_enabled_);
+  ESP_LOGW(TAG, "Monitor 0x%02X LED toggle failed: %s; state is unconfirmed", address, reason);
 }
 
 void GenSAMHub::transmit_iss_settings_() {
-  iss_tx_pending_ = false;
   // Broadcast, as GLM does: one frame reaches every speaker, discovered or not.
+  bool sent = true;
   if (iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT) {
-    this->send_frame_twice(make_iss_sleep_delay(BROADCAST_ADDRESS, iss_sleep_delay_));
+    if (this->send_frame_twice(make_iss_sleep_delay(BROADCAST_ADDRESS, iss_sleep_delay_))) {
+      iss_delay_confirmation_pending_ = true;
+      for (auto &kv : registry_.monitors()) {
+        kv.second.iss_stored_delay_known = false;
+        kv.second.iss_read_sent = false;
+      }
+    } else {
+      sent = false;
+    }
   }
   if (iss_threshold_ != ISS_THRESHOLD_DEFAULT) {
-    this->send_frame_twice(make_iss_threshold(BROADCAST_ADDRESS, iss_threshold_));
+    if (this->send_frame_twice(make_iss_threshold(BROADCAST_ADDRESS, iss_threshold_))) {
+      iss_threshold_confirmation_pending_ = true;
+      for (auto &kv : registry_.monitors()) {
+        kv.second.iss_stored_threshold_known = false;
+        kv.second.iss_read_sent = false;
+      }
+    } else {
+      sent = false;
+    }
   }
+  if (!sent) {
+    ESP_LOGW(TAG, "Could not transmit ISS settings; will retry");
+    return;
+  }
+  iss_tx_pending_ = false;
   ESP_LOGI(TAG, "Set ISS overrides: sleep delay %u min, threshold %d dBu (0 = speaker default)",
            (unsigned) iss_sleep_delay_, (int) iss_threshold_);
+}
+
+void GenSAMHub::publish_iss_settings_() {
+  const bool available = !registry_.monitors().empty() && !bus_silent_ && !resuming_ &&
+                         !(yield_to_glm_ && arbiter_.is_active());
+  bool delay_known = available, threshold_known = available;
+  bool all_online = available;
+  bool have_delay = false, have_threshold = false;
+  bool delay_differs = false, threshold_differs = false;
+  uint32_t delay = 0;
+  int32_t threshold = 0;
+  for (const auto &kv : registry_.monitors()) {
+    const GenSAMMonitor &mon = kv.second;
+    if (!mon.online) all_online = false;
+    if (!mon.online || !mon.iss_stored_delay_known) {
+      delay_known = false;
+    } else {
+      uint32_t value = mon.iss_stored_delay_min;
+      if (value == 0 || value >= ISS_READ_NEVER_MIN) value = ISS_SLEEP_DELAY_NEVER;
+      if (have_delay && delay != value) delay_differs = true;
+      delay = value;
+      have_delay = true;
+    }
+    if (!mon.online || !mon.iss_stored_threshold_known) {
+      threshold_known = false;
+    } else {
+      if (have_threshold && threshold != mon.iss_stored_threshold_dbu) threshold_differs = true;
+      threshold = mon.iss_stored_threshold_dbu;
+      have_threshold = true;
+    }
+  }
+  if (!iss_tx_pending_) {
+    if (!all_online) {
+      iss_delay_confirmation_pending_ = false;
+      iss_threshold_confirmation_pending_ = false;
+    } else {
+      if (delay_known) iss_delay_confirmation_pending_ = false;
+      if (threshold_known) iss_threshold_confirmation_pending_ = false;
+    }
+  }
+  const char *delay_name = delay_known && have_delay && !delay_differs
+                               ? iss_option_name(ISS_SLEEP_DELAY_OPTIONS, delay) : nullptr;
+  const char *threshold_name = threshold_known && have_threshold && !threshold_differs
+                                   ? iss_option_name(ISS_THRESHOLD_OPTIONS, threshold) : nullptr;
+  if (delay_name == nullptr) delay_name = ISS_STR_UNKNOWN;
+  if (threshold_name == nullptr) threshold_name = ISS_STR_UNKNOWN;
+  if (!iss_delay_confirmation_pending_ && iss_sleep_delay_select_ != nullptr &&
+      iss_display_delay_ != delay_name) {
+    iss_display_delay_ = delay_name;
+    iss_sleep_delay_select_->publish_state(delay_name);
+  }
+  if (!iss_threshold_confirmation_pending_ && iss_threshold_select_ != nullptr &&
+      iss_display_threshold_ != threshold_name) {
+    iss_display_threshold_ = threshold_name;
+    iss_threshold_select_->publish_state(threshold_name);
+  }
 }
 
 void GenSAMHub::transmit_filter_bypass_() {
@@ -1561,10 +1648,12 @@ void GenSAMHub::identify_monitor_by_address(uint8_t address, uint32_t duration_m
   }
 
   mon->identify_duration_ms = duration_ms;
-  if (mon->dip_switches_known && (mon->dip_word & DIPSW_LED_DISABLE_MASK) != 0) {
+  const bool gate_disabled = mon->led_gate_known ? !mon->led_gate_enabled :
+      mon->dip_switches_known && (mon->dip_word & DIPSW_LED_DISABLE_MASK) != 0;
+  if (gate_disabled) {
     mon->identify_restore_led_disable = true;
     mon->identify_led_restore_attempts = 0;
-    if (!this->start_identify_led_command_(*mon, true, millis())) {
+    if (!this->start_led_command_(*mon, true, millis())) {
       mon->identify_restore_led_disable = false;
       ESP_LOGW(TAG, "Cannot temporarily enable LEDs on monitor 0x%02X", address);
     }
@@ -1574,15 +1663,19 @@ void GenSAMHub::identify_monitor_by_address(uint8_t address, uint32_t duration_m
   this->send_identify_pulse_(*mon, duration_ms);
 }
 
-bool GenSAMHub::start_identify_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now) {
-  if (identify_led_command_pending_ || current_query_addr_ != 0 ||
-      !this->send_transient_frame_(make_iss_led_state(mon.address, enabled))) {
+bool GenSAMHub::start_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now, bool for_system) {
+  if (led_command_pending_ || current_query_addr_ != 0) {
     return false;
   }
-  identify_led_command_pending_ = true;
-  identify_led_command_enabling_ = enabled;
-  identify_led_command_addr_ = mon.address;
-  identify_led_command_ms_ = now;
+  const Frame frame = make_iss_led_state(mon.address, enabled);
+  if (!(for_system ? this->send_frame(frame) : this->send_transient_frame_(frame))) {
+    return false;
+  }
+  led_command_pending_ = true;
+  led_command_enabling_ = enabled;
+  led_command_for_system_ = for_system;
+  led_command_addr_ = mon.address;
+  led_command_ms_ = now;
   current_query_addr_ = mon.address;
   current_query_cmd_ = CMD_WAKEUP;
   race_step_time_ = now;
@@ -1601,19 +1694,25 @@ bool GenSAMHub::send_identify_pulse_(GenSAMMonitor &mon, uint32_t duration_ms) {
   return true;
 }
 
-bool GenSAMHub::handle_identify_led_reply_(const Frame &frame, uint32_t now) {
-  if (!identify_led_command_pending_ || frame.address != HOST_ADDRESS ||
-      current_query_addr_ != identify_led_command_addr_) {
+bool GenSAMHub::handle_led_reply_(const Frame &frame, uint32_t now) {
+  if (!led_command_pending_ || frame.address != HOST_ADDRESS ||
+      current_query_addr_ != led_command_addr_) {
     return false;
   }
 
-  const uint8_t address = identify_led_command_addr_;
-  const bool enabling = identify_led_command_enabling_;
+  const uint8_t address = led_command_addr_;
+  const bool enabling = led_command_enabling_;
+  const bool for_system = led_command_for_system_;
   GenSAMMonitor *mon = registry_.find(address);
   if (frame.command == CMD_COMMAND_REJECTED || frame.command == CMD_UNSUPPORTED) {
-    identify_led_command_pending_ = false;
+    led_command_pending_ = false;
     current_query_addr_ = 0;
     current_query_cmd_ = 0;
+    if (mon != nullptr) mon->led_gate_known = false;
+    if (for_system) {
+      this->fail_system_leds_(address, "speaker rejected LED gate");
+      return true;
+    }
     if (enabling) {
       if (mon != nullptr) {
         mon->identify_restore_led_disable = false;
@@ -1638,14 +1737,42 @@ bool GenSAMHub::handle_identify_led_reply_(const Frame &frame, uint32_t now) {
     return false;
   }
 
-  identify_led_command_pending_ = false;
+  led_command_pending_ = false;
   current_query_addr_ = 0;
   current_query_cmd_ = 0;
+  last_poll_step_time_ = now;
   if (mon == nullptr) {
+    if (for_system) {
+      this->fail_system_leds_(address, "speaker disappeared");
+      return true;
+    }
     ESP_LOGW(TAG, "Monitor 0x%02X disappeared during Identify LED operation", address);
     return true;
   }
   this->mark_monitor_seen_(*mon);
+  mon->led_gate_enabled = enabling;
+  mon->led_gate_known = true;
+
+  if (for_system) {
+    if (!system_led_tx_pending_ || enabling != current_system_leds_enabled_) return true;
+    delayMicroseconds(300);
+    if (!this->send_frame_twice(make_bypass_led_state(address, mon->mute, enabling))) {
+      this->fail_system_leds_(address, "steady LED pattern was not transmitted");
+      return true;
+    }
+    if (!mon->system_leds_known || mon->system_leds_enabled != enabling) {
+      speaker_settings_[mon->unique_id].modified = true;
+      speaker_settings_[mon->unique_id].dirty = true;
+      note_update_requested_ = true;
+      this->set_store_status_("Unsaved changes");
+    }
+    mon->system_leds_enabled = enabling;
+    mon->system_leds_known = true;
+    mon->identify_end_ms = 0;
+    mon->identify_restore_led_disable = false;
+    mon->identify_led_restore_attempts = 0;
+    return true;
+  }
 
   if (enabling) {
     delayMicroseconds(300);
@@ -1661,18 +1788,23 @@ bool GenSAMHub::handle_identify_led_reply_(const Frame &frame, uint32_t now) {
 
 void GenSAMHub::check_identify_timeouts_() {
   const uint32_t now = millis();
-  if (identify_led_command_pending_) {
-    if (now - identify_led_command_ms_ <= SPEAKER_SETTINGS_REPLY_TIMEOUT_MS) {
+  if (led_command_pending_) {
+    if (now - led_command_ms_ <= SPEAKER_SETTINGS_REPLY_TIMEOUT_MS) {
       return;
     }
-    const uint8_t address = identify_led_command_addr_;
-    const bool enabling = identify_led_command_enabling_;
-    identify_led_command_pending_ = false;
+    const uint8_t address = led_command_addr_;
+    const bool enabling = led_command_enabling_;
+    led_command_pending_ = false;
     if (current_query_addr_ == address) {
       current_query_addr_ = 0;
     }
     current_query_cmd_ = 0;
     GenSAMMonitor *mon = registry_.find(address);
+    if (mon != nullptr) mon->led_gate_known = false;
+    if (led_command_for_system_) {
+      this->fail_system_leds_(address, "no reply to LED gate");
+      return;
+    }
     if (enabling) {
       ESP_LOGW(TAG, "No reply enabling Identify LEDs on monitor 0x%02X; attempting to restore its saved state",
                address);
@@ -1709,7 +1841,7 @@ void GenSAMHub::check_identify_timeouts_() {
     if (mon.identify_restore_led_disable &&
         (mon.identify_end_ms == 0 || now >= mon.identify_end_ms)) {
       mon.identify_end_ms = 0;
-      if (this->start_identify_led_command_(mon, false, now)) {
+      if (this->start_led_command_(mon, false, now)) {
         mon.identify_led_restore_attempts++;
         ESP_LOGI(TAG, "Restoring saved LED-disable state on monitor 0x%02X", mon.address);
       }
@@ -1772,6 +1904,7 @@ void GenSAMHub::loop() {
   }
   this->check_monitor_timeouts_();
   this->check_identify_timeouts_();
+  this->publish_iss_settings_();
   this->log_stats_();
 }
 

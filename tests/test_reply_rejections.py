@@ -48,8 +48,9 @@ class GenSAMHub {
   uint8_t current_query_addr_ = 0, current_query_cmd_ = 0, query_retries_ = 0;
   uint8_t current_poll_index_ = 0, iss_query_op_ = 0, sleep_probe_phase_ = 0;
   uint32_t race_step_time_ = 0, last_poll_step_time_ = 0, last_sleep_tx_ms_ = 0;
-  size_t device_queries_advanced_ = 0;
+  size_t device_queries_advanced_ = 0, iss_read_failures_ = 0;
   GroupApplyState apply_;
+  void fail_iss_readback_() { ++iss_read_failures_; }
   void advance_device_query_() {
     ++device_queries_advanced_;
     current_query_addr_ = 0;
@@ -79,7 +80,7 @@ int main() {
   polling.iss_query_op_ = WAKEUP_OP_ISS_LEVEL;
   assert(polling.handle_command_rejection_({HOST_ADDRESS, CMD_UNSUPPORTED}, 30));
   assert(polling.current_query_addr_ == 0 && polling.iss_query_op_ == 0 &&
-         polling.last_poll_step_time_ == 30);
+         polling.last_poll_step_time_ == 30 && polling.iss_read_failures_ == 1);
 
   GenSAMHub group;
   group.race_state_ = RaceState::APPLYING_GROUP;

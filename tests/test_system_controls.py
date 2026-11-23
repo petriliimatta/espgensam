@@ -181,5 +181,192 @@ def main():
     print("System power, mute and volatile monitor LED control checks passed")
 
 
+def test_led_commands():
+    source = (ROOT / "components/gensam/hub.cpp").read_text()
+    methods = []
+    for signature in (
+        "void GenSAMHub::set_system_leds_enabled(",
+        "void GenSAMHub::transmit_system_leds_()",
+        "void GenSAMHub::commit_system_led_state_(",
+        "void GenSAMHub::fail_system_leds_(",
+        "bool GenSAMHub::start_led_command_(",
+        "bool GenSAMHub::handle_led_reply_(",
+        "void GenSAMHub::check_identify_timeouts_()",
+    ):
+        start = source.index(signature)
+        methods.append(source[start:source.index("\n}\n", start) + 3])
+    cpp = r'''
+#include <cassert>
+#include <cstdint>
+#include <functional>
+#include <map>
+#include <string>
+#include <vector>
+uint32_t clock_ms = 100;
+uint32_t millis() { return clock_ms; }
+void delayMicroseconds(uint32_t) {}
+int warnings = 0;
+const char *TAG = "test";
+template<typename... Args> void test_log(Args&&...) {}
+#define ESP_LOGW(...) (++warnings, test_log(__VA_ARGS__))
+#define ESP_LOGI(...) ((void) 0)
+#define ESP_LOGD(...) ((void) 0)
+#define YESNO(value) ((value) ? "YES" : "NO")
+constexpr int HOST_ADDRESS = 1, CMD_BYPASS = 0x2B, CMD_WAKEUP = 0x3A;
+constexpr int CMD_REPORT_STATUS = 9, CMD_ACK = 6, CMD_COMMAND_REJECTED = 0x10, CMD_UNSUPPORTED = 0x11;
+constexpr uint32_t SPEAKER_SETTINGS_REPLY_TIMEOUT_MS = 500;
+constexpr uint8_t IDENTIFY_LED_RESTORE_MAX_ATTEMPTS = 2;
+enum class RaceState { POLLING_MONITORS, IDLE };
+struct Frame {
+  int address, command;
+  std::vector<uint8_t> payload;
+};
+Frame make_iss_led_state(uint8_t address, bool enabled) {
+  return {address, CMD_WAKEUP, {6, uint8_t(enabled ? 0 : 1)}};
+}
+Frame make_bypass(uint8_t address, bool mute, bool, bool enabled) {
+  return {address, CMD_BYPASS, {uint8_t((mute ? 1 : 0) | (enabled ? (mute ? 2 : 4) : 8))}};
+}
+Frame make_bypass_led_state(uint8_t address, bool mute, bool enabled) {
+  return make_bypass(address, mute, false, enabled);
+}
+struct GenSAMMonitor {
+  uint8_t address;
+  uint32_t unique_id;
+  std::string model = "8351B";
+  bool online = true, mute = false;
+  bool system_leds_known = true, system_leds_enabled = false;
+  bool led_gate_known = true, led_gate_enabled = false;
+  bool identify_restore_led_disable = false;
+  uint8_t identify_led_restore_attempts = 0;
+  uint32_t identify_end_ms = 0, identify_duration_ms = 0;
+};
+struct Registry {
+  std::map<uint8_t, GenSAMMonitor> items{{2, {2, 20}}, {3, {3, 30}}};
+  bool empty() const { return items.empty(); }
+  size_t size() const { return items.size(); }
+  auto &monitors() { return items; }
+  GenSAMMonitor *find(uint8_t address) {
+    auto found = items.find(address);
+    return found == items.end() ? nullptr : &found->second;
+  }
+};
+struct SpeakerSettings { bool modified = false, dirty = false; };
+class GenSAMHub {
+ public:
+  Registry registry_;
+  std::map<uint32_t, SpeakerSettings> speaker_settings_;
+  std::vector<Frame> frames;
+  std::vector<std::function<void(bool)>> system_led_state_callbacks_;
+  bool current_system_leds_enabled_ = false, last_tx_system_leds_enabled_ = false;
+  bool system_led_state_known_ = true, system_led_tx_pending_ = false;
+  bool note_update_requested_ = false, transmit_ok = true, accepting = true, resuming_ = false;
+  bool led_command_pending_ = false, led_command_enabling_ = false, led_command_for_system_ = false;
+  uint8_t led_command_addr_ = 0, current_query_addr_ = 0, current_query_cmd_ = 0;
+  uint32_t led_command_ms_ = 0, race_step_time_ = 0, last_poll_step_time_ = 0;
+  struct { bool active = false; } apply_, speaker_transaction_;
+  RaceState race_state_ = RaceState::POLLING_MONITORS;
+  bool accept_user_command_() { return accepting; }
+  bool can_transmit() const { return transmit_ok; }
+  bool send_frame(const Frame &frame) {
+    if (!transmit_ok) return false;
+    frames.push_back(frame);
+    return true;
+  }
+  bool send_transient_frame_(const Frame &frame) { return send_frame(frame); }
+  bool send_frame_twice(const Frame &frame) { return send_frame(frame); }
+  bool live_leds_enabled_(const GenSAMMonitor *mon) const { return mon->system_leds_enabled; }
+  bool send_identify_pulse_(GenSAMMonitor &, uint32_t) { return true; }
+  void mark_monitor_seen_(GenSAMMonitor &) {}
+  void set_store_status_(const std::string &) {}
+  void publish_active_settings_() {}
+  void set_system_leds_enabled(bool enabled);
+  void transmit_system_leds_();
+  void commit_system_led_state_(bool enabled);
+  bool start_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now, bool for_system = false);
+  bool handle_led_reply_(const Frame &frame, uint32_t now);
+  void check_identify_timeouts_();
+  void fail_system_leds_(uint8_t address, const char *reason);
+};
+'''
+    cpp += "\n".join(methods) + r'''
+int main() {
+  GenSAMHub hub;
+  int publications = 0;
+  hub.system_led_state_callbacks_.push_back([&](bool) { ++publications; });
+  hub.registry_.items[3].mute = true;
+  hub.registry_.items[2].identify_restore_led_disable = true;
+  hub.registry_.items[2].identify_end_ms = 10000;
+  const Frame ack{HOST_ADDRESS, CMD_ACK, {}};
+  hub.set_system_leds_enabled(true);
+  hub.transmit_system_leds_();
+  assert(hub.frames.size() == 1 && hub.frames[0].command == CMD_WAKEUP &&
+         hub.frames[0].payload == std::vector<uint8_t>({6, 0}));
+  assert(hub.led_command_pending_ && hub.current_query_addr_ == 2 && publications == 0);
+  assert(!hub.handle_led_reply_({HOST_ADDRESS, CMD_REPORT_STATUS, {0, 0, 0, 0}}, clock_ms));
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  assert(hub.frames.back().command == CMD_BYPASS && hub.frames.back().payload[0] == 4);
+  assert(!hub.registry_.items[2].identify_restore_led_disable &&
+         hub.registry_.items[2].identify_end_ms == 0);
+  hub.transmit_system_leds_();
+  assert(hub.current_query_addr_ == 3 && publications == 0);
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  assert(hub.frames.back().command == CMD_BYPASS && hub.frames.back().payload[0] == 3);
+  hub.transmit_system_leds_();
+  assert(!hub.system_led_tx_pending_ && publications == 1 && hub.last_tx_system_leds_enabled_);
+
+  hub.set_system_leds_enabled(false);
+  hub.transmit_system_leds_();
+  assert(hub.frames.back().payload == std::vector<uint8_t>({6, 1}));
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  assert(hub.frames.back().payload[0] == 8);
+  hub.transmit_system_leds_();
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  assert(hub.frames.back().payload[0] == 9);
+  hub.transmit_system_leds_();
+  assert(!hub.system_led_tx_pending_ && publications == 2 && !hub.last_tx_system_leds_enabled_);
+
+  // A newer request supersedes a gate command whose reply is still outstanding.
+  hub.set_system_leds_enabled(true);
+  hub.transmit_system_leds_();
+  hub.set_system_leds_enabled(false);
+  const size_t before_stale_ack = hub.frames.size();
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  assert(hub.frames.size() == before_stale_ack);
+  hub.transmit_system_leds_();
+  assert(hub.current_query_addr_ == 2 && hub.frames.back().payload[1] == 1);
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  hub.transmit_system_leds_();
+  assert(hub.handle_led_reply_(ack, clock_ms));
+  hub.transmit_system_leds_();
+  assert(!hub.system_led_tx_pending_ && !hub.last_tx_system_leds_enabled_);
+
+  hub.set_system_leds_enabled(true);
+  hub.transmit_system_leds_();
+  const size_t before_timeout = hub.frames.size();
+  const int before_timeout_warning = warnings;
+  clock_ms += SPEAKER_SETTINGS_REPLY_TIMEOUT_MS + 1;
+  hub.check_identify_timeouts_();
+  assert(!hub.led_command_pending_ && !hub.system_led_tx_pending_ &&
+         !hub.system_led_state_known_ && hub.current_query_addr_ == 0);
+  assert(hub.frames.size() == before_timeout && warnings == before_timeout_warning + 1);
+
+  hub.set_system_leds_enabled(true);
+  hub.transmit_system_leds_();
+  assert(hub.handle_led_reply_({HOST_ADDRESS, CMD_UNSUPPORTED, {}}, clock_ms));
+  assert(!hub.system_led_tx_pending_ && !hub.system_led_state_known_);
+  for (const auto &frame : hub.frames) assert(frame.command != 0x15);
+}
+'''
+    with tempfile.TemporaryDirectory(prefix="gensam-leds-") as directory:
+        path = Path(directory)
+        (path / "test.cpp").write_text(cpp)
+        subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", str(path / "test.cpp"),
+                        "-o", str(path / "test")], check=True)
+        subprocess.run([str(path / "test")], check=True)
+    print("Acknowledged LED gate and live-pattern transmission checks passed")
+
+
 if __name__ == "__main__":
     main()
+    test_led_commands()

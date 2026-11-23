@@ -243,10 +243,11 @@ gensam:
 
 The system is exposed to Home Assistant as controls rather than a media player: **Volume (dB)**,
 **Mute**, **System Power** (on means awake), and **Monitor LEDs**. The LED switch controls the
-live front-LED state independently of the stored GLM ISS LED preference and the mute switch's
-red/off status indication. The switch remains unknown until each discovered monitor's LED state
-is observed or commanded; if the monitors disagree, it reports off (not all LEDs are enabled).
-The live choice is volatile; an explicit speaker store synchronizes it to the stored LED setting.
+live front-LED state, including when the saved GLM ISS setting disables LEDs. Each toggle sends
+the volatile `3A 06` LED gate, waits for its acknowledgement, and then sets the steady `2B`
+pattern while preserving mute. The switch updates after all speakers are confirmed; a failed
+gate command leaves it unknown. If observed monitor states disagree, it reports off (not all
+LEDs are enabled). The live choice is volatile; only an explicit speaker store saves it.
 Discovery reads the stored LED preference where supported, otherwise the switch remains unknown.
 Group presets and calibration controls are available separately.
 
@@ -286,13 +287,15 @@ ISS sleep and standby reset monitor settings to the defaults stored on each moni
 stored settings if no defaults have been saved. Session-only settings are lost; the hub
 reads the speaker-stored identity and resumes volume instead of reapplying an unsaved group.
 
-**ISS Sleep Delay** and **ISS Sensitivity** (System Controls) override the monitors' stored ISS
-settings: GLM's delays from 2 min to 4 h or Never, and Low/Medium/High (−61/−68/−75 dBu).
-They are volatile until **Store Settings to Speakers** is pressed; they are not saved by the ESP.
-Rediscovery discards applied overrides, preserving only new requests waiting to be sent.
-*Speaker default* sends nothing and uses
-the delay and threshold stored on each monitor; the longest stored delay wins, and Never on any
-monitor disables sleep. Hub-managed sleep uses the same settings.
+**ISS Sleep Delay** and **ISS Sensitivity** (System Controls) show the settings read from all
+discovered speakers when they agree. They show **Unknown** while readings are unavailable,
+speakers disagree, or a value is outside the select menu. A newly selected value stays visible
+while its readback is pending.
+Selecting GLM's delays from 2 min to 4 h or Never, or Low/Medium/High (−61/−68/−75 dBu), broadcasts
+the choice to all speakers. Changes are volatile until **Store Settings to Speakers** is pressed;
+they are not saved by the ESP. Rediscovery discards applied overrides, preserving only new
+requests waiting to be sent. Without an override, hub-managed sleep uses each monitor's own
+settings: the longest delay wins, and Never on any monitor disables sleep.
 See [`docs/glm-bus-guide-reconciliation.md`](docs/glm-bus-guide-reconciliation.md) §3.
 
 **Bypass Phase Correction**, disabled by default, bypasses each monitor's phase-correction

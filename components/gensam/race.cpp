@@ -70,9 +70,6 @@ constexpr uint32_t SLEEP_PROBE_INTERVAL_MS = 5000;
 /// Time to wait for each half (address ACK, state reply) of a sleep probe.
 constexpr uint32_t SLEEP_PROBE_REPLY_TIMEOUT_MS = 300;
 
-/// A stored ISS delay at or above this many minutes means the speaker never sleeps.
-constexpr uint32_t ISS_STORED_DELAY_NEVER_MIN = 65535;
-
 /// Phases of one sleep probe, in sleep_probe_phase_.
 enum : uint8_t {
   SLEEP_PROBE_IDLE = 0,
@@ -268,7 +265,7 @@ void GenSAMHub::broadcast_volume_and_keepalive_() {
 // --- Incoming replies to what the state machine sent --------------------------------
 
 bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
-  if (this->handle_identify_led_reply_(frame, now)) return true;
+  if (this->handle_led_reply_(frame, now)) return true;
   if (this->handle_speaker_settings_reply_(frame, now)) return true;
   if (this->handle_command_rejection_(frame, now) ||
       this->handle_poll_continuation_(frame, now)) {
@@ -368,6 +365,8 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
         } else {
           mon.system_leds_enabled = frame.payload[0] == 0;
           mon.system_leds_known = true;
+          mon.led_gate_enabled = mon.system_leds_enabled;
+          mon.led_gate_known = true;
         }
       } else if (current_query_cmd_ == CMD_DIP_SWITCH) {
         if (!parse_dip_switch_status(frame.payload.data(), frame.payload.size(), mon)) {
@@ -944,6 +943,7 @@ bool GenSAMHub::handle_command_rejection_(const Frame &frame, uint32_t now) {
       if (current_query_addr_ == 0) return false;
       ESP_LOGW(TAG, "Monitor 0x%02X returned %s for poll/read (reply 0x%02X)",
                current_query_addr_, reason, frame.command);
+      this->fail_iss_readback_();
       current_query_addr_ = 0;
       iss_query_op_ = 0;
       last_poll_step_time_ = now;
@@ -988,9 +988,10 @@ void GenSAMHub::race_step_polling_(uint32_t now) {
   }
 
   if (current_query_addr_ != 0 && now - race_step_time_ > POLL_REPLY_TIMEOUT_MS) {
-    if (identify_led_command_pending_ && current_query_addr_ == identify_led_command_addr_) {
+    if (led_command_pending_ && current_query_addr_ == led_command_addr_) {
       return;
     }
+    this->fail_iss_readback_();
     current_query_addr_ = 0;
     iss_query_op_ = 0;
     last_poll_step_time_ = now;
@@ -1056,6 +1057,19 @@ void GenSAMHub::race_step_idle_(uint32_t now) {
 
 // --- Hub-managed ISS sleep ----------------------------------------------------------
 
+void GenSAMHub::fail_iss_readback_() {
+  if (iss_query_op_ != WAKEUP_OP_ISS_SLEEP_DELAY && iss_query_op_ != WAKEUP_OP_ISS_THRESHOLD) {
+    return;
+  }
+  GenSAMMonitor *mon = registry_.find(current_query_addr_);
+  if (mon != nullptr) mon->iss_level_read_due = true;
+  if (!iss_tx_pending_ && (iss_delay_confirmation_pending_ || iss_threshold_confirmation_pending_)) {
+    ESP_LOGW(TAG, "Could not confirm ISS settings for monitor 0x%02X", current_query_addr_);
+    iss_delay_confirmation_pending_ = false;
+    iss_threshold_confirmation_pending_ = false;
+  }
+}
+
 bool GenSAMHub::auto_sleep_delay_ms_(uint32_t &delay_ms) const {
   uint32_t minutes = 0;
   if (iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT) {
@@ -1074,7 +1088,7 @@ bool GenSAMHub::auto_sleep_delay_ms_(uint32_t &delay_ms) const {
         return false;
       }
       if (mon.iss_stored_delay_min == 0 ||
-          mon.iss_stored_delay_min >= ISS_STORED_DELAY_NEVER_MIN) {
+          mon.iss_stored_delay_min >= ISS_READ_NEVER_MIN) {
         return false;
       }
       minutes = std::max(minutes, mon.iss_stored_delay_min);
@@ -1107,9 +1121,11 @@ bool GenSAMHub::send_iss_read_(uint32_t now) {
       continue;
     }
     uint8_t op = WAKEUP_OP_ISS_LEVEL;
-    if (iss_sleep_delay_ == ISS_SLEEP_DELAY_DEFAULT && !mon.iss_stored_delay_known) {
+    if (mon.iss_level_read_due) {
+      mon.iss_level_read_due = false;
+    } else if (!mon.iss_stored_delay_known) {
       op = WAKEUP_OP_ISS_SLEEP_DELAY;
-    } else if (iss_threshold_ == ISS_THRESHOLD_DEFAULT && !mon.iss_stored_threshold_known) {
+    } else if (!mon.iss_stored_threshold_known) {
       op = WAKEUP_OP_ISS_THRESHOLD;
     }
     mon.iss_read_sent = true;

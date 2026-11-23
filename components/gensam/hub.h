@@ -91,13 +91,13 @@
 ///    Nothing throttled them either, so a fast knob or an automation could issue a frame per event.
 ///
 ///    Instead the setters only *accept*: they record the latest target and return. Volume and
-///    mute publish on acceptance; the monitor LED switch publishes only after its live command
-///    has gone out, or the state is snooped from GLM.
+///    mute publish on acceptance; the monitor LED switch publishes after each speaker acknowledges
+///    its volatile 3A 06 gate change and receives the steady 2B pattern, or is snooped from GLM.
 ///    The live LED setting is volatile. Discovery reads the speaker's stored LED preference
 ///    where supported; an unsupported query leaves it unknown. Explicit store synchronizes
 ///    a known live LED choice to 3A 06 before saving the speaker's working profile.
-///    Mute frames preserve the live LED setting. Identify temporarily enables the stored LED
-///    state when its DIP word disables LEDs, then restores that state without storing the override.
+///    Mute frames preserve the live LED setting. Identify temporarily enables a disabled gate,
+///    then restores it without storing the override. An explicit LED toggle supersedes Identify.
 ///    loop() transmits requests when the bus is in a safe slot - polling or idle, no reply
 ///    outstanding, TX available - at
 ///    most one item per loop() call. Volume additionally waits out standby and goes no more
@@ -123,7 +123,8 @@
 ///    requests still waiting to be sent. No group/calibration is implicitly pushed on wake.
 ///    A runtime 3A 01 write takes effect without a store (verified on 8351B firmware 1.24).
 ///    - ISS overrides are broadcast, as GLM sends them, and are not persisted by the ESP.
-///      "Speaker default" stops overriding and sends nothing; profile reload restores it.
+///      Selects show accepted requests while readback is pending; otherwise they show the
+///      common readback, or Unknown if speakers differ or do not reply.
 ///    - Phase correction and calibration bypass are session controls. Store is blocked while
 ///      either is enabled so an audition cannot overwrite the saved calibration.
 ///    - The uploaded preset catalog persists independently. Only master volume is saved and
@@ -143,8 +144,8 @@
 ///    same settings, and keeps the bus for telemetry and control. Measured on 8351B monitors
 ///    (firmware 1.24, AES3 input); see docs/glm-bus-guide-reconciliation.md.
 ///    - Sampling: while polling, each online monitor is asked for its ISS input level
-///      (3A 84, BE32 dBu) about every ISS_SAMPLE_INTERVAL_MS. With "Speaker default" the
-///      speaker's own delay (3A 81) and threshold (3A 82) are read first. Signal at or above
+///      (3A 84, BE32 dBu) about every ISS_SAMPLE_INTERVAL_MS. The speaker's own delay (3A 81)
+///      and threshold (3A 82) are read first. Signal at or above
 ///      the threshold on any monitor restarts the idle timer, as do discovery and any user
 ///      command. The system delay is the longest of the monitors' delays; any "never" wins.
 ///    - Entry: once the delay has passed, every online monitor has a fresh level sample, and
@@ -747,12 +748,13 @@ class GenSAMHub : public Component {
 
   /// @brief Restore the steady front LED on monitors whose identify pulse has expired.
   void check_identify_timeouts_();
-  /// @brief Send one temporary stored LED-state change and reserve its reply slot.
+  /// @brief Send one volatile LED-gate change and reserve its reply slot.
   /// @param mon Target monitor.
-  /// @param enabled Whether to temporarily enable or restore the stored LED state.
+  /// @param enabled Whether to enable the LED gate.
   /// @param now Current millis() timestamp.
+  /// @param for_system Whether this applies the system LED toggle rather than Identify.
   /// @return True if the frame was sent and its reply slot reserved.
-  bool start_identify_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now);
+  bool start_led_command_(GenSAMMonitor &mon, bool enabled, uint32_t now, bool for_system = false);
   /// @brief Send the Identify blink and start its duration only after successful TX.
   /// @param mon Target monitor.
   /// @param duration_ms Requested blink duration.
@@ -786,7 +788,12 @@ class GenSAMHub : public Component {
   /// @brief Send the requested live monitor LED state to each discovered monitor.
   void transmit_system_leds_();
 
-  /// @brief Broadcast whichever ISS overrides are set; clears iss_tx_pending_.
+  /// @brief Abort an unconfirmed LED toggle and expose its state as unknown.
+  /// @param address Speaker whose command failed.
+  /// @param reason Diagnostic reason.
+  void fail_system_leds_(uint8_t address, const char *reason);
+
+  /// @brief Broadcast ISS overrides; retain the pending request on transmission failure.
   void transmit_iss_settings_();
 
   /// @brief Send the phase-correction bypass state to each discovered monitor.
@@ -876,6 +883,12 @@ class GenSAMHub : public Component {
   /// @return True if @p frame was that reply.
   bool handle_iss_reply_(const Frame &frame, uint32_t now);
 
+  /// @brief Publish ISS selects from requested values or common speaker readback.
+  void publish_iss_settings_();
+
+  /// @brief Release pending ISS confirmations when a setting read fails.
+  void fail_iss_readback_();
+
   /// @brief Whether every condition for hub-managed sleep holds in this polling slot.
   bool sleep_due_(uint32_t now) const;
 
@@ -937,11 +950,11 @@ class GenSAMHub : public Component {
   /// @param now Current millis() timestamp.
   /// @return True if the frame was the expected reply and has been fully handled.
   bool handle_active_reply_(const Frame &frame, uint32_t now);
-  /// @brief Consume the reply to a temporary Identify LED-enable/restore command.
+  /// @brief Consume the reply to a system or Identify LED-gate command.
   /// @param frame Incoming reply.
   /// @param now Current millis() timestamp.
-  /// @return True if the reply belongs to the pending Identify LED command.
-  bool handle_identify_led_reply_(const Frame &frame, uint32_t now);
+  /// @return True if the reply belongs to the pending LED command.
+  bool handle_led_reply_(const Frame &frame, uint32_t now);
   /// @brief Consume the second telemetry frame some monitors use to continue a long reply.
   bool handle_poll_continuation_(const Frame &frame, uint32_t now);
   /// @brief Handle explicit 0x10/0x11 replies to an outstanding unicast request.
@@ -1169,10 +1182,11 @@ class GenSAMHub : public Component {
   uint8_t rid_retries_{0};
   uint8_t current_query_addr_{0};
   uint8_t current_query_cmd_{0};
-  bool identify_led_command_pending_{false};
-  bool identify_led_command_enabling_{false};
-  uint8_t identify_led_command_addr_{0};
-  uint32_t identify_led_command_ms_{0};
+  bool led_command_pending_{false};
+  bool led_command_enabling_{false};
+  bool led_command_for_system_{false};  ///< Pending gate change belongs to the system toggle.
+  uint8_t led_command_addr_{0};
+  uint32_t led_command_ms_{0};
   uint8_t query_retries_{0};  ///< Attempts already spent on the outstanding device query.
   uint32_t last_poll_cycle_time_{0};
   uint32_t last_poll_step_time_{0};
@@ -1239,6 +1253,10 @@ class GenSAMHub : public Component {
   bool phase_correction_bypass_{false};  ///< Never restored, so every boot starts corrected.
   select::Select *iss_sleep_delay_select_{nullptr};
   select::Select *iss_threshold_select_{nullptr};
+  std::string iss_display_delay_;
+  std::string iss_display_threshold_;
+  bool iss_delay_confirmation_pending_{false};      ///< Waiting to verify a requested delay.
+  bool iss_threshold_confirmation_pending_{false};  ///< Waiting to verify a requested threshold.
   switch_::Switch *phase_correction_bypass_switch_{nullptr};
   std::vector<std::function<void(float, bool, bool)>> state_callbacks_;
   std::vector<std::function<void(bool)>> system_led_state_callbacks_;

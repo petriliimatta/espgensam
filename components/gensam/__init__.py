@@ -271,11 +271,11 @@ CROSSOVER_OPTIONS = ["Full band"] + [
 # ISS select options, in order. Must match ISS_SLEEP_DELAY_OPTIONS and ISS_THRESHOLD_OPTIONS in
 # iss.h exactly: those are what the entities publish back.
 ISS_SLEEP_DELAY_OPTIONS = [
-    "Speaker default", "2 min", "10 min", "30 min", "60 min", "120 min", "180 min", "240 min",
+    "Unknown", "2 min", "10 min", "30 min", "60 min", "120 min", "180 min", "240 min",
     "Never",
 ]
 ISS_SENSITIVITY_OPTIONS = [
-    "Speaker default", "Low (-61 dBu)", "Medium (-68 dBu)", "High (-75 dBu)",
+    "Unknown", "Low (-61 dBu)", "Medium (-68 dBu)", "High (-75 dBu)",
 ]
 
 

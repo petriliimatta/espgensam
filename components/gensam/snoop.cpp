@@ -96,11 +96,19 @@ void GenSAMHub::snoop_system_leds_(const Frame &frame) {
     for (auto &kv : registry_.monitors()) {
       kv.second.system_leds_enabled = enabled;
       kv.second.system_leds_known = true;
+      if (frame.command == CMD_WAKEUP) {
+        kv.second.led_gate_enabled = enabled;
+        kv.second.led_gate_known = true;
+      }
     }
   } else {
     GenSAMMonitor &mon = registry_.get_or_create(frame.address);
     mon.system_leds_enabled = enabled;
     mon.system_leds_known = true;
+    if (frame.command == CMD_WAKEUP) {
+      mon.led_gate_enabled = enabled;
+      mon.led_gate_known = true;
+    }
   }
 
   bool all_known = !registry_.empty() || frame.address == BROADCAST_ADDRESS;

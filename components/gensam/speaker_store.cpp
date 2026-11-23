@@ -160,6 +160,12 @@ bool GenSAMHub::handle_speaker_settings_reply_(const Frame &frame, uint32_t now)
   } else if (!frame.payload.empty()) {
     return false;
   }
+  if (tx.phase == 0) {
+    if (auto *mon = registry_.find(tx.addresses[tx.index])) {
+      mon->led_gate_enabled = this->live_leds_enabled_(mon);
+      mon->led_gate_known = true;
+    }
+  }
   if (tx.phase == 3) {
     tx.committed++;
     if (const auto *mon = registry_.find(tx.addresses[tx.index]))

@@ -184,6 +184,8 @@ struct GenSAMMonitor {
   bool mute{false};                 ///< Channel mute state (CMD_BYPASS bit 0).
   bool system_leds_enabled{true};    ///< Front LED state, when system_leds_known is true.
   bool system_leds_known{false};     ///< True once a live or stored LED setting was observed.
+  bool led_gate_enabled{true};      ///< Last read or acknowledged 3A 06 LED-enable gate.
+  bool led_gate_known{false};       ///< Whether led_gate_enabled is known for this session.
   bool standby{true};                ///< Last stable standby state; current only when standby_known is true.
   bool standby_known{false};        ///< True if the monitor's latest power report is active or standby.
   bool standby_transition{false};   ///< True while the latest power report is a non-stable transition.
@@ -196,6 +198,7 @@ struct GenSAMMonitor {
   bool iss_stored_delay_known{false};
   bool iss_stored_threshold_known{false};
   bool iss_read_sent{false};         ///< True once any ISS read has been sent to this monitor.
+  bool iss_level_read_due{false};    ///< Request an input sample after a failed setting read.
   uint32_t iss_last_read_ms{0};      ///< millis() of the last ISS read sent to this monitor.
   uint32_t last_seen_ms{0};         ///< Timestamp (millis) of last valid frame received from this monitor.
   uint32_t last_poll_ms{0};         ///< Timestamp (millis) when the last query frame was sent to this monitor.

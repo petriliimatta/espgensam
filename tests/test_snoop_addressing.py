@@ -60,6 +60,7 @@ struct GenSAMMonitor {
   Binding *binding = nullptr;
   bool mute = false;
   bool system_leds_enabled = true, system_leds_known = false;
+  bool led_gate_enabled = true, led_gate_known = false;
 };
 class Registry {
  public:
@@ -132,6 +133,12 @@ int main() {
   assert(first_binding.crossover_freq == 90 && second_binding.crossover_freq == 90);
   assert(first.system_leds_known && second.system_leds_known);
   assert(!first.system_leds_enabled && !second.system_leds_enabled);
+  assert(!first.led_gate_known && !second.led_gate_known);
+  hub.snoop_system_leds_(Frame(0x02, CMD_WAKEUP, {WAKEUP_OP_ISS_LED, ISS_LED_ENABLED}));
+  assert(first.led_gate_known && first.led_gate_enabled && !second.led_gate_known);
+  hub.snoop_system_leds_(Frame(BROADCAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_ISS_LED, ISS_LED_DISABLED}));
+  assert(first.led_gate_known && second.led_gate_known &&
+         !first.led_gate_enabled && !second.led_gate_enabled);
 
   hub.snoop_power_(Frame(MULTICAST_ADDRESS, CMD_WAKEUP, {WAKEUP_OP_POWER, WAKEUP_VAL_STANDBY_1}));
   assert(!hub.current_standby_);
