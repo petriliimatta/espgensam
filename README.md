@@ -8,12 +8,27 @@
 
 - **Speaker Controls**: Direct volume, mute, power/standby, input select, and telemetry reporting.
 - **Group Presets**: Switch between named calibrations (GLM's "groups") from Home Assistant, each with its own room EQ, level, delay, crossover and input routing per speaker. Read straight from your existing GLM 5 setup file. A Bypass Calibration switch turns the calibration off for a quick before-and-after comparison.
+- **Device-hosted SAM uploader**: Upload and preview a GLM 5 `.sam` setup from the device's web page, then save its group catalog without rebuilding firmware.
 - **No GLM software or GLM network adapter required**: Control monitors locally, using a cheap ESP32 microcontroller and RS-485 transceiver.
 - **Native Home Assistant Integration**: Control your Genelec SAM system from Home Assistant (optional)
 - **TV Remote Volume**: [`tools/cec_audio_bridge`](tools/cec_audio_bridge/README.md) makes a Raspberry Pi on the HDMI bus act as the CEC audio system, so TV, projector and Apple TV volume keys control the monitors through Home Assistant.
 
-<img src="docs/images/hub.png" alt="screenshot of hub device in Home Assistant">
-<img src="docs/images/speaker.png" alt="screenshot of speaker device in Home Assistant">
+**Home Assistant:** hub and monitor devices. Some optional monitor controls are enabled here.
+
+<img src="docs/images/ha-hub.png" alt="Home Assistant hub controls, sensors and connected monitors" width="360">
+<img src="docs/images/ha-speaker.png" alt="Home Assistant monitor controls, sensors and diagnostics" width="360">
+
+**ESPHome web interface:** system controls, group controls and monitor telemetry.
+
+<img src="docs/images/hub.png" alt="ESPHome web interface system and group controls" width="420">
+<img src="docs/images/speaker.png" alt="ESPHome web interface monitor controls and telemetry" width="420">
+
+**SAM uploader:** validated setup preview.
+
+<img src="docs/images/upload.png" alt="SAM uploader with an example validated setup preview" width="600">
+
+The hub screenshots' group name and volume, and the uploader preview, use example data;
+speaker identifiers are redacted.
 
 > **Use of this code is entirely at your own risk!** I can't rule out that this could damage your Genelec or computer hardware, eat your tweeters, void your warranty, cause hearing damage, or, last but not least, ruin your audio fidelity. You have been warned.
 
@@ -313,10 +328,10 @@ for no bass management, or 50-120 Hz), **Level** (-60 to 0 dB, attenuation only)
 disabled by default, because a group preset normally owns them and overwrites them at its next
 push — enable them in Home Assistant for a speaker you want to trim by hand.
 
-The standard device web page provides the controls and group selector. The last successfully
-applied group and its speaker settings and PEQ bands are available as JSON at `/group-view`. They
-describe the preset, not live readback: bypass, manual changes, offline speakers and a
-pending group push can make actual settings differ.
+The standard device web page provides the controls and group selector. When a preset is
+recognized as active, `/group-view` provides its speaker settings and PEQ bands as JSON;
+otherwise it returns `null`. These describe the preset, not live readback: bypass, manual
+changes, offline speakers and a pending group push can make actual settings differ.
 
 **Saving speaker settings.** Select a preset and make any adjustments, then press **Store
 Settings to Speakers** to save the current working profile 0, including a known LED choice and
@@ -341,7 +356,7 @@ Profile storage and short notes were hardware-verified on 8351B firmware 1.24.07
 The profile-restore command and stored LED readback are documented/protocol-derived but still
 need hardware verification; other models and persistence of individual ISS fields are not confirmed.
 
-### 3. Group Presets (`gensam: groups:`)
+### 2. Group Presets (`gensam: groups:`)
 
 A group preset is a named monitoring configuration, just like the Group buttons in GLM: which
 speakers take part, how each is fed, and the room calibration for each of them at one listening
@@ -353,32 +368,47 @@ groups, upload a new `.sam` file on the [upload page](http://espgensam.local/upl
 and save and restart. This saves only the catalog on the ESP. Explicitly choose a group to
 apply it, and store to speakers if it should survive speaker/ESP restarts.
 
-Groups can also be written by hand in YAML for programmatic use, but the
-runtime selector does not list them and YAML no longer sets a startup default. Remove
-`default_group:` from existing configurations; select the desired group after upload instead.
+Groups can also be written by hand in YAML and compiled into the firmware. Create
+`gensam_groups.yaml` alongside the device configuration and include it as below. These groups
+do not appear in the **Group Preset** selector; apply one with an ESPHome action instead:
+
+```yaml
+button:
+  - platform: template
+    name: "Apply Main Listening Position"
+    on_press:
+      - lambda: |-
+          id(gensam_hub).set_active_group_by_name("Main Listening Position");
+```
+
+If a valid uploaded SAM catalog is restored from flash, it replaces the YAML group table rather
+than merging with it, so even lambda calls can select only uploaded groups. YAML no longer sets
+a startup default. Remove `default_group:` from existing configurations; apply the desired
+group explicitly instead.
 
 ```yaml
 gensam:
   groups: !include gensam_groups.yaml
-
 ```
 
 ```yaml
 # gensam_groups.yaml
 - name: "Main Listening Position"
   devices:
-    - unique_id: 1842915          # matches a monitor's unique_id above
+    - unique_id: 1842915          # monitor's hardware ID
       source: aes3_sum            # analog | aes3_a | aes3_b | aes3_sum
       crossover: 90               # Hz, or full_band for a system without a subwoofer
       level_db: -1.9258           # per-speaker trim from AutoCal
       delay_samples: 289          # alignment delay, 48 kHz samples (max 9216 = 192 ms)
-      lfe_channel: aes3_b         # subwoofers in surround setups only; default none
-      lfe_level_db: -4            # whole dB, including the LFE +10 boost if set
       filters:                    # up to 20; the rest are left flat
-        - {type: notch, frequency: 56.1739, gain: -6.05847, q: 4.68839}
         - {type: low_shelf, frequency: 118.711, gain: -0.177536}
+        - {type: bypass, frequency: 100, gain: 0}
         - {type: high_shelf, frequency: 14999, gain: -0.0199986}
+        - {type: bypass, frequency: 10000, gain: 0}
+        - {type: notch, frequency: 56.1739, gain: -6.05847, q: 4.68839}
 ```
+
+Replace the example hardware ID with that of a discovered, online speaker.
 
 `type` is `notch` (GLM's name for a peaking filter), `peaking` (an alias for `notch`),
 `low_shelf`, `high_shelf` or `bypass`. Both `notch` and `peaking` require `q`; the other
@@ -399,29 +429,32 @@ group by hand, follow the same order.
 Applying a group sets every speaker's Input select, Crossover, Level and Delay - and the LFE
 routing and level on a subwoofer that has them - so they always show what the speakers were
 last told. Changing one by hand takes effect immediately but does
-not alter the group, so the next group push - switching group, waking from standby, or a
-rediscovery - puts the group's own values back. While the two disagree, the hub's **Group
-Modified** diagnostic sensor is on.
+not alter the group. Selecting a group explicitly pushes its values again; wake and rediscovery
+do not automatically reapply an uploaded preset. After sleep or standby, the speakers revert
+to their stored settings, so volatile adjustments can be lost.
+**Active Speaker Settings** reports the recognized preset, including when its settings have
+been modified, or reports mixed, external or unknown settings.
 
 **Bypass Calibration** works like GLM's "Cal bypassed" button, for comparing the system with
 and without its calibration. While it is on, every speaker plays with flat EQ, no level trim
 and no delay. Crossover, input routing and LFE stay as the group has them. Turning it off puts
-the calibration back. It stays in effect across group switches and standby.
+the calibration back. It stays in effect across group switches, but resets on rediscovery,
+including rediscovery after waking from sleep.
 
 - Each speaker also has its own **Bypass Calibration** switch, disabled by default, for
   comparing one speaker at a time. A speaker is bypassed while either switch is on.
-- Both switches are off after every restart.
+- Both switches reset when the hub rediscovers the monitors, including after a restart.
 - They exist when groups are configured or runtime upload is enabled. With no active group,
   bypass takes effect when a group is next applied; it cannot restore unknown monitor settings.
 - Because the level trim is removed as well, bypassed speakers can play louder than
   calibrated ones.
 
-The system **Mute** switch controls all monitors. Each monitor's own **Mute** switch is a
-configuration entity. On the device web page it sits in that speaker's card with its input
-and calibration settings; the page places volume, mute, power,
-calibration bypass and rediscovery in **System Controls**, with group selection in its own section.
+The system **Mute** switch controls all monitors. Each monitor also has its own **Mute**
+control in its device card, alongside its input and calibration settings. In the device web
+page, volume, mute, power, monitor LEDs, bypasses, ISS sleep settings and rediscovery are in
+**System Controls**, with group selection and speaker-store controls in **Group Preset**.
 
-### 4. Importing an existing GLM setup
+### 3. Importing an existing GLM setup
 
 Upload a GLM 5 `.sam` setup file from `http://<device-ip>/upload` and its groups become presets,
 so an existing AutoCal calibration does not have to be retyped. Validate, save the catalog and
@@ -474,7 +507,8 @@ block is needed. Group membership and settings come from the uploaded `.sam` fil
 
 The web server and `/upload` uploader are enabled by default. Flash by USB the first time to install
 the required storage partitions. Open [the upload page](http://espgensam.local/upload) (or use the
-device IP) to validate a GLM 5 `.sam` file and save and restart. The validation result and any
+device IP) to validate a GLM 5 `.sam` file and save and restart. The screenshot above shows the
+upload form and its validated-setup preview. The validation result and any
 import warnings appear under the **Validate** button once a file has been uploaded. The
 speaker-stored settings remain selected after restart. After validation, expand groups and speakers under
 **New setup details** to inspect the uploaded file's input routing, level, delay, crossover and LFE feed. Each speaker's PEQ section lists every
