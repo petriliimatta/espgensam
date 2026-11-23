@@ -246,12 +246,13 @@ The system is exposed to Home Assistant as controls rather than a media player: 
 live front-LED state independently of the stored GLM ISS LED preference and the mute switch's
 red/off status indication. The switch remains unknown until each discovered monitor's LED state
 is observed or commanded; if the monitors disagree, it reports off (not all LEDs are enabled).
-The last known LED setting is reapplied after wake-up discovery and group changes without
-writing the speakers' stored GLM preferences.
+The live choice is volatile; an explicit speaker store synchronizes it to the stored LED setting.
+Discovery reads the stored LED preference where supported, otherwise the switch remains unknown.
 Group presets and calibration controls are available separately.
 
-In controller mode, boot wakes the monitors and restores the remembered volume and selected
-group. The hub then keeps polling and puts the monitors to sleep itself (see *Hub-managed
+In controller mode, boot wakes the monitors, reloads speaker profile 0, and resumes only the
+remembered master volume. No preset or individual calibration is automatically pushed.
+The hub then keeps polling and puts the monitors to sleep itself (see *Hub-managed
 sleep* below). On first boot,
 `startup_volume_db` is used; restored volume is clamped to the configured bounds.
 Choose safe bounds before deploying. Preferences are saved through ESPHome's wear-managed
@@ -260,7 +261,7 @@ flash mechanism; an abrupt loss of power before its flush can lose recent change
 System volume and mute never wake the monitors: while they sleep or are powered off, a change
 is held and applied after the next wake. Other controls wake the system if needed. They probe
 cached monitors first; standby or a missing response triggers wake, rediscovery and
-restoration of the selected group, which can interrupt audio. Group/input changes may
+reading of speaker settings. Explicit group/input changes may
 intentionally interrupt audio.
 
 **Hub-managed sleep**. Continuous polling resets the monitors' own ISS
@@ -269,7 +270,7 @@ input level every few seconds. After the ISS Sleep Delay with no monitor at or a
 threshold and no user control, it sends one sleep request. The bus status becomes `Sleeping`
 and System Power reports off. While asleep the hub sends no polls, which would wake the
 monitors, and instead probes one monitor's sleep state every few seconds. When audio wakes a
-monitor, the hub wakes the system, rediscovers it and reapplies the selected group, so an audio
+monitor, the hub wakes the system and rediscovers it without rewriting calibration, so an audio
 wake is detected within seconds. Volume and mute changes during sleep are held until the next
 wake; any other control wakes the system. A monitor that played audio in the last few minutes
 may wake itself shortly after the request; the hub then simply waits another delay.
@@ -278,25 +279,25 @@ Explicit System Power off sends shutdown and then keeps the bus silent: the stat
 `Bus Silent`, telemetry and monitor online indicators become unknown, and the hub does not
 watch for an audio wake. Any control other than system volume/mute powers it back on. Listen-only mode never
 transmits. External GLM control takes priority; once GLM has been quiet for
-`glm_inactivity_cooldown`, the hub rediscovers the monitors and reapplies the selected group,
+`glm_inactivity_cooldown`, the hub rediscovers the monitors without reapplying a group,
 unless the system was powered off.
 
 ISS sleep and standby reset monitor settings to the defaults stored on each monitor, or to no
 stored settings if no defaults have been saved. Session-only settings are lost; the hub
-reapplies the selected group after every wake it handles.
+reads the speaker-stored identity and resumes volume instead of reapplying an unsaved group.
 
 **ISS Sleep Delay** and **ISS Sensitivity** (System Controls) override the monitors' stored ISS
 settings: GLM's delays from 2 min to 4 h or Never, and Low/Medium/High (−61/−68/−75 dBu).
-They are runtime-only. They are never stored on the monitors, so a sleep or restart reverts them,
-and the hub re-sends them after each discovery and group push. An override therefore applies to
-the next sleep after each wake that the hub handles. *Speaker default* sends nothing and uses
+They are volatile until **Store Settings to Speakers** is pressed; they are not saved by the ESP.
+Rediscovery discards applied overrides, preserving only new requests waiting to be sent.
+*Speaker default* sends nothing and uses
 the delay and threshold stored on each monitor; the longest stored delay wins, and Never on any
 monitor disables sleep. Hub-managed sleep uses the same settings.
 See [`docs/glm-bus-guide-reconciliation.md`](docs/glm-bus-guide-reconciliation.md) §3.
 
 **Bypass Phase Correction**, disabled by default, bypasses each monitor's phase-correction
-filter for comparison. Like Bypass Calibration it is off after a restart, and it is reapplied
-after discovery and group pushes. Not every SAM model is confirmed to honour it.
+filter for comparison. Like Bypass Calibration it is a session control, reset by rediscovery.
+Storing is blocked while either bypass is enabled. Not every SAM model is confirmed to honour it.
 
 Each monitor gets an **Input** select listing `Analog`, `AES3 Channel A (Left)`,
 `AES3 Channel B (Right)` and `AES3 Channel A+B (Sum)`. Routing is per speaker because that is
@@ -314,6 +315,29 @@ applied group and its speaker settings and PEQ bands are available as JSON at `/
 describe the preset, not live readback: bypass, manual changes, offline speakers and a
 pending group push can make actual settings differ.
 
+**Saving speaker settings.** Select a preset and make any adjustments, then press **Store
+Settings to Speakers** to save the current working profile 0, including a known LED choice and
+ISS edits. Until then changes are volatile. **Speaker Store Status** reports progress, success
+or acknowledged partial commits; the operation is not atomic across speakers. All discovered
+speakers must be online, unmuted and unbypassed, and known preset members must be present.
+Presets with disabled/muted members cannot be stored under this safety rule.
+
+**Active Speaker Settings** distinguishes a matching preset, modified/unsaved settings,
+mixed speakers, and observed external settings. The controller owns and overwrites the
+speaker's user-notes field with a 21-byte fingerprint tag, verified before committing.
+This is metadata over known configuration payloads, not complete independent DSP readback.
+The tag's store marker means prepared for storage, not proof of a successful commit; a failed
+operation can leave a prepared live tag. Use **Speaker Store Status** for acknowledged results.
+An external upload observed on the bus invalidates identity; a GLM upload made while the ESP
+is disconnected may retain an old tag and cannot be reliably detected.
+
+Selecting **Speaker settings** reloads profile 0 and discards unsaved adjustments.
+Only master volume is persisted/resumed by the ESP. Mute, power and bypass are session controls;
+the uploaded SAM catalog is persisted separately and does not automatically select a preset.
+Profile storage and short notes were hardware-verified on 8351B firmware 1.24.07.6470.
+The profile-restore command and stored LED readback are documented/protocol-derived but still
+need hardware verification; other models and persistence of individual ISS fields are not confirmed.
+
 ### 3. Group Presets (`gensam: groups:`)
 
 A group preset is a named monitoring configuration, just like the Group buttons in GLM: which
@@ -323,8 +347,8 @@ block to every speaker.
 
 The **Group Preset** selector lists groups from the uploaded setup. To change the available
 groups, upload a new `.sam` file on the [upload page](http://espgensam.local/upload), validate,
-and save and restart. A new upload always selects its first group; subsequent selections are
-remembered across ESP restarts for that stored setup. This does not write speaker flash.
+and save and restart. This saves only the catalog on the ESP. Explicitly choose a group to
+apply it, and store to speakers if it should survive speaker/ESP restarts.
 
 Groups can also be written by hand in YAML for programmatic use, but the
 runtime selector does not list them and YAML no longer sets a startup default. Remove
@@ -397,13 +421,13 @@ calibration bypass and rediscovery in **System Controls**, with group selection 
 ### 4. Importing an existing GLM setup
 
 Upload a GLM 5 `.sam` setup file from `http://<device-ip>/upload` and its groups become presets,
-so an existing AutoCal calibration does not have to be retyped. Validate, choose the startup
-group, then save and restart; no rebuild is needed. The first install after enabling uploads
+so an existing AutoCal calibration does not have to be retyped. Validate, save the catalog and
+restart, then explicitly select a preset; no rebuild is needed. The first install after enabling uploads
 must be over USB to install the runtime storage partitions.
 
 The upload retains every valid device in the file, including speakers that are not configured
-or currently online, and applies settings to matching speakers as they are discovered on the
-bus. Setup files are read as UTF-8, falling back to Latin-1 for older files. Each speaker's SAM
+or currently online, and applies to matching online speakers only when a preset is selected.
+Setup files are read as UTF-8, falling back to Latin-1 for older files. Each speaker's SAM
 `Name` is published as a per-monitor **SAM Name** diagnostic entity, matched by hardware ID;
 the numbered monitor entity slots remain stable even when speakers are renamed or discovered in
 a different order.
@@ -449,7 +473,7 @@ The web server and `/upload` uploader are enabled by default. Flash by USB the f
 the required storage partitions. Open [the upload page](http://espgensam.local/upload) (or use the
 device IP) to validate a GLM 5 `.sam` file and save and restart. The validation result and any
 import warnings appear under the **Validate** button once a file has been uploaded. The
-first group is selected initially. After validation, expand the groups and speakers under
+speaker-stored settings remain selected after restart. After validation, expand groups and speakers under
 **New setup details** to inspect the uploaded file's input routing, level, delay, crossover and LFE feed. Each speaker's PEQ section lists every
 imported slot, including its type, active or bypassed status, frequency, gain and Q. Slots are
 numbered from 1; shelving filters use fixed Q values. The new-setup preview is shown only for a
@@ -457,8 +481,7 @@ validated file and is cleared after a restart. These are imported settings,
 not a live readback from the speakers. The main page and Home Assistant show the uploaded group
 options.
 
-The remembered selection is applied after discovery. A new upload starts with its first group;
-legacy stored defaults remain readable until replaced by a new upload or a remembered selection.
+No catalog preset is automatically applied after discovery, and legacy startup selections are ignored.
 Missing or offline monitors are skipped with a log warning. The web server and uploader use
 unauthenticated, unencrypted HTTP, and OTA is unauthenticated. Keep the device on a trusted local
 network; never expose these services to the internet.

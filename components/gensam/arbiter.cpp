@@ -7,7 +7,7 @@
 namespace esphome {
 namespace gensam {
 
-BusArbiter::Verdict BusArbiter::classify(const Frame &frame, uint32_t now) const {
+BusArbiter::Verdict BusArbiter::classify(const Frame &frame, uint32_t now, bool awaiting_reply) const {
   // While yielded GenSAM transmits nothing, so no frame on the bus can be its own.
   if (active_) {
     return Verdict::EXTERNAL_MASTER;
@@ -19,7 +19,7 @@ BusArbiter::Verdict BusArbiter::classify(const Frame &frame, uint32_t now) const
   }
 
   // A reply heading to the host: ours only if we asked recently enough to still be waiting.
-  if (last_our_tx_ == 0 || now - last_our_tx_ > REPLY_WINDOW_MS) {
+  if (!awaiting_reply && (last_our_tx_ == 0 || now - last_our_tx_ > REPLY_WINDOW_MS)) {
     return Verdict::EXTERNAL_MASTER;
   }
   return Verdict::OUR_REPLY;

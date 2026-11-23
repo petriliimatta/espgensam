@@ -35,8 +35,9 @@
 ///    restored or initial value; there is simply no startup write path, which is what makes
 ///    boot non-destructive (see select.h section 5). A speaker keeps the trim, delay and
 ///    crossover its own DSP holds until a group is applied or somebody chooses a value.
-///    Like the crossover, both are re-transmitted during CONFIGURING_DEVICES after a
-///    rediscovery, and followed back when GLM changes them on the bus.
+///    Like the crossover, changes remain volatile until explicit speaker store. Discovery
+///    discards applied overrides rather than re-transmitting them; GLM writes are followed
+///    back and invalidate preset identity.
 ///
 /// 4. System Volume in Decibels (GenSAMVolumeNumber):
 ///    Professional monitoring environments and studio workflows often require explicit

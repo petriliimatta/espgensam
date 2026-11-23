@@ -124,6 +124,9 @@ class MonitorRegistry {
   /// @brief Discard all discovered monitors. Bindings are retained.
   void clear() { monitors_.clear(); }
 
+  /// @brief Forget volatile controls and invalidate their UI values before speaker readback.
+  void reset_volatile_settings();
+
   /// @brief Publish model, serial, firmware, and hardware ID to the bound text sensors.
   /// @param mon The monitor whose metadata to publish.
   void publish_metadata(const GenSAMMonitor &mon);

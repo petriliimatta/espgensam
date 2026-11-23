@@ -148,13 +148,21 @@ getting one when it does.
 | Duck | `FF 1F 00 00 08` → `FF 1F 00 00 02`, refreshed mid-push | `FF 1F 00 00 02` once |
 | Wake | `FF 3A 03 7F` ×2, `FF 3A 03 01` | same, since 2026-09-21 |
 | Routing pass, per speaker | `05`, `2B 04`, `40 00 …`, `40 01 …` (sub), `2B 04` | not sent; routing happens once, in the DSP block |
-| DSP pass, per speaker | `FF 04`, `17 01`, `10 02`, `10 01 00`, `10 01 09`, `10 0E` ×changed | `FF 04`, `17 01`, `10 02`, `10 01 00`, `10 0E` ×20, `3B`, `40 00`, `40 01` |
+| DSP pass, per speaker | `FF 04`, `17 01`, `10 02`, `10 01 00`, `10 01 09`, `10 0E` ×changed | `FF 04`, live mute/LED synchronization, `17 01`, `10 02`, `10 01 00`, `10 0E` ×20, `3B`, `40 00`, `40 01` |
 | Sub extras | `3E` LFE level, `42 00 00`, `3C 00 00` | `3E` when the group has an LFE feed; `42` and `3C` not sent |
 | Tail | `2B 04` sweep ×2, then `3D 00 00` per speaker | not sent |
 | Restore | `FF 1F <vol>` ×3 | `FF 1F <vol>` once, preceded by `FF 04` |
 
-espgensam's sequence is the step enum in `components/gensam/race.cpp`, dispatched by
+espgensam's sequence is the shared step enum in `components/gensam/speaker_settings.h`, dispatched by
 `send_group_step_()` and driven one frame per `loop()` by `race_step_applying_group_()`.
+The hub requests ESPHome's high-frequency loop for the duration of a push, so frames go out
+at the OEM's ~3 ms spacing instead of once per ~16 ms loop interval.
+
+After rediscovery, espgensam reads identity and resumes volume without sending individual
+input/crossover/level/delay or automatically pushing a preset. Only an explicit group request
+starts the sequence above. Cold ESP boot and the "Speaker settings" option restore profile 0;
+normal wake uses the speakers' own stored settings. This avoids the old unducked input
+reselection and repeated wake retuning.
 
 ### The wake burst is a second, distinct shape
 

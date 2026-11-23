@@ -29,7 +29,8 @@
 ///
 ///    "Automatic" (source 0x03) is deliberately absent.  It is a *standalone* setting - what a
 ///    speaker does on its own, not live input selection - and GLM writes it as part of a store
-///    (CMD_SERVICE 0x15 33), which this component does not send.  It has been seen only inside
+///    (CMD_SERVICE 0x15 33). This component's explicit store does not synthesize that routing.
+///    It has been seen only inside
 ///    a GLM store (`40 00 03 02 01`/`02`, docs/glm-protocol-comparison.md section 9), and the
 ///    meaning of its last two bytes there is not settled.  A snooped 0x03 is handled
 ///    defensively in snoop_audio_source_().
@@ -45,7 +46,7 @@
 ///
 ///    Monitors NACK (0x11) an empty 0x3B, so the stored setting cannot be read back; the
 ///    select reads "unknown" until something sets it.  A snooped value that is not one of the
-///    options (neither project has seen one) is stored and re-sent, but not published.
+///    options (neither project has seen one) is observed, but not published.
 ///
 /// 3. Group Preset Selection (GenSAMGroupSelect):
 ///    Selecting a group re-pushes a whole calibrated DSP block - filters, levels, delays,
@@ -53,29 +54,27 @@
 ///    also drives the input selects above, so they show what the speakers were last told.
 ///
 /// 4. Manual Overrides Are Temporary By Construction:
-///    Changing a monitor's input or crossover by hand transmits immediately and updates its binding, but
-///    nothing about the active group changes, so the next group push - a group switch, a
-///    standby cycle, or a rediscovery - restores that group's setting.
+///    Changing a monitor's input or crossover queues a safe-slot write and updates its binding.
+///    It marks preset identity modified. Another explicit group push replaces those values;
+///    rediscovery discards applied overlays and does not automatically reapply a preset.
 ///
 /// 5. Non-Destructive Boot:
 ///    Monitors hold their input routing and crossover in their own flash.  A binding starts
 ///    unconfigured and transmits nothing until a group is applied, Home Assistant selects
-///    something, or a GLM frame is snooped, so powering this component up never overwrites
-///    what the speakers had.
+///    something, or a GLM frame is snooped. Cold boot reloads the speaker's own profile 0
+///    rather than sending a configured/default preset.
 ///
-/// 6. Volatile Persistence & Standby Wakeup Retransmission:
-///    Monitors lose volatile DSP state in amplifier sleep, so the configured routing and
-///    crossover are re-transmitted during CONFIGURING_DEVICES after every rediscovery.
+/// 6. Explicit Persistence:
+///    Changes remain volatile until Store Settings to Speakers saves the working profile.
+///    "Speaker settings" explicitly reloads profile 0; normal wake never pushes a preset.
 ///
 /// 7. Passive Bus Snooping:
 ///    0x40 and 0x3B frames from external GLM software are snooped, updating the owning
-///    monitor's selects without bus contention.  That is not only cosmetic: the
-///    re-transmission above would otherwise reassert the stale value.
+///    monitor's selects without bus contention and invalidate the controller's group identity.
 ///
 /// 8. ISS Sleep Delay & Sensitivity (GenSAMIssSleepDelaySelect, GenSAMIssSensitivitySelect):
-///    System-wide, runtime-only overrides of the speakers' Intelligent Signal Sensing settings,
-///    offered as GLM's own menu plus "Speaker default". iss.h holds the options and explains why
-///    they are never stored in the speakers; hub.h section 7 covers when they are sent.
+///    System-wide overrides, volatile until explicit store, offered as GLM's own menu plus
+///    "Speaker default". iss.h holds the options; hub.h section 7 covers their safe-slot writes.
 /// ===================================================================================
 
 #include "esphome/core/component.h"
@@ -108,7 +107,7 @@ class GenSAMGroupSelect : public select::Select {
   /// @brief Action executed when the user picks a group in Home Assistant.
   /// @param value Selected group name from the uploaded setup.
   void control(const std::string &value) override {
-    if (hub_ == nullptr || !runtime_ready_) {
+    if (hub_ == nullptr || (!runtime_ready_ && value != SPEAKER_SETTINGS_OPTION)) {
       ESP_LOGW("gensam", "Cannot select a group before an uploaded setup is restored");
       return;
     }

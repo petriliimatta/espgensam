@@ -123,6 +123,9 @@ def _extended_telemetry_schema(key):
     )
 
 CONF_REDISCOVER_BUTTON = "rediscover_button"
+CONF_STORE_SETTINGS_BUTTON = "store_settings_button"
+CONF_ACTIVE_SETTINGS = "active_settings"
+CONF_STORE_STATUS = "store_status"
 CONF_BASS_MANAGEMENT_CROSSOVER_FREQUENCY = "bass_management_crossover_frequency"
 CONF_VOLUME_DB = "volume_db"
 CONF_SYSTEM_POWER = "system_power"
@@ -229,6 +232,9 @@ GenSAMMonitorCalibrationBypassSwitch = gensam_ns.class_(
 )
 GenSAMIdentifyButton = gensam_ns.class_("GenSAMIdentifyButton", button.Button)
 GenSAMRediscoverButton = gensam_ns.class_("GenSAMRediscoverButton", button.Button)
+GenSAMStoreSettingsButton = gensam_ns.class_("GenSAMStoreSettingsButton", button.Button)
+GenSAMActiveSettingsSensor = gensam_ns.class_("GenSAMActiveSettingsSensor", text_sensor.TextSensor)
+GenSAMStoreStatusSensor = gensam_ns.class_("GenSAMStoreStatusSensor", text_sensor.TextSensor)
 GenSAMLevelNumber = gensam_ns.class_("GenSAMLevelNumber", number.Number)
 GenSAMDelayNumber = gensam_ns.class_("GenSAMDelayNumber", number.Number)
 GenSAMVolumeNumber = gensam_ns.class_("GenSAMVolumeNumber", number.Number)
@@ -1024,6 +1030,15 @@ _CONFIG_SCHEMA = cv.Schema(
         cv.Optional(CONF_REDISCOVER_BUTTON): button.button_schema(
             GenSAMRediscoverButton,
         ),
+        cv.Optional(CONF_STORE_SETTINGS_BUTTON): button.button_schema(
+            GenSAMStoreSettingsButton, icon="mdi:content-save"
+        ),
+        cv.Optional(CONF_ACTIVE_SETTINGS): text_sensor.text_sensor_schema(
+            GenSAMActiveSettingsSensor, icon="mdi:tune"
+        ),
+        cv.Optional(CONF_STORE_STATUS): text_sensor.text_sensor_schema(
+            GenSAMStoreStatusSensor, icon="mdi:content-save-check"
+        ),
         cv.Optional(CONF_VOLUME_DB): number.number_schema(
             GenSAMVolumeNumber,
             icon="mdi:volume-high",
@@ -1162,7 +1177,7 @@ async def to_code(config):
     if CONF_GROUP_SELECT in config:
         group_sel = await select.new_select(
             config[CONF_GROUP_SELECT],
-            options=["No uploaded groups"],
+            options=["Speaker settings"],
         )
         cg.add(group_sel.set_hub(var))
         cg.add(var.set_group_select(group_sel))
@@ -1216,6 +1231,14 @@ async def to_code(config):
     if CONF_REDISCOVER_BUTTON in config:
         btn = await button.new_button(config[CONF_REDISCOVER_BUTTON])
         cg.add(btn.set_hub(var))
+
+    if CONF_STORE_SETTINGS_BUTTON in config:
+        btn = await button.new_button(config[CONF_STORE_SETTINGS_BUTTON])
+        cg.add(btn.set_hub(var))
+    for key in (CONF_ACTIVE_SETTINGS, CONF_STORE_STATUS):
+        if key in config:
+            entity = await text_sensor.new_text_sensor(config[key])
+            cg.add(entity.set_hub(var))
 
     if CONF_VOLUME_DB in config:
         vol_conf = config[CONF_VOLUME_DB]

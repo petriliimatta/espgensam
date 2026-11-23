@@ -208,9 +208,7 @@ void GenSAMHub::snoop_audio_source_(const Frame &frame) {
   if (src != SOURCE_ANALOG && src != SOURCE_DIGITAL_AES3) {
     // An external controller selected something this component cannot name -- 0x03
     // (Automatic, a standalone setting we do not implement) or an undocumented value. Stop
-    // asserting this monitor's input: configure_monitor_() re-transmits it after a standby
-    // cycle, so leaving the flag set would later revert the bus to the last routing we did
-    // understand, silently undoing a change we watched go past.
+    // presenting this monitor's input as a known supported setting.
     //
     // The entity keeps displaying its last value; an ESPHome select cannot be returned to
     // Unknown once published. Only transmission stops.
@@ -290,8 +288,7 @@ void GenSAMHub::snoop_dsp_(const Frame &frame) {
   if (is_level) {
     // A value below the range this component offers is one it cannot reassert. Rather than
     // clamp - which would quietly disagree with the speaker - stop asserting the level at
-    // all, exactly as snoop_audio_source_() does for a source it cannot name. Otherwise
-    // configure_monitor_() would undo the change at the next standby cycle.
+    // all, exactly as snoop_audio_source_() does for a source it cannot name.
     if (decode_int24(&frame.payload[2]) < volume_db_to_int24(MIN_LEVEL_DB)) {
       if (b != nullptr && b->level_configured) {
         b->level_configured = false;

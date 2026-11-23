@@ -57,6 +57,7 @@ class Switch {
   bool state{false};
   bool published{false};
   void publish_state(bool value) { state = value; published = true; }
+  void set_has_state(bool value) { published = value; }
   void request(bool value) { write_state(value); }
  protected:
   virtual void write_state(bool) = 0;
@@ -105,6 +106,11 @@ int main() {
   assert(!leds.state);
   hub.leds_enabled = true; hub.notify_leds();
   assert(leds.state);
+  hub.leds_known = false;
+  for (auto &callback : hub.led_callbacks) callback(true);
+  assert(!leds.published);
+  hub.notify_leds();
+  assert(leds.state && leds.published);
 
   // Initial discovery must not invent an LED preference.
   hub.queue_runtime_settings_();
@@ -172,7 +178,7 @@ def main():
         subprocess.run(["c++", "-std=c++17", "-Wall", "-Wextra", "-I", str(root),
                         str(root / "main.cpp"), "-o", str(binary)], check=True)
         subprocess.run([str(binary)], check=True)
-    print("System power, mute and monitor LED wake restoration checks passed")
+    print("System power, mute and volatile monitor LED control checks passed")
 
 
 if __name__ == "__main__":

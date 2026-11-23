@@ -42,9 +42,6 @@ constexpr uint32_t DEVICE_QUERY_TIMEOUT_MS = 250;
 /// the next rediscovery - which on a bus with a percent or so of frame errors happens readily.
 constexpr uint8_t DEVICE_QUERY_MAX_RETRIES = 2;
 
-/// Time to wait for a configuration acknowledgement before moving to the next monitor.
-constexpr uint32_t CONFIG_ACK_TIMEOUT_MS = 200;
-
 /// Time to wait for a telemetry reply before abandoning that monitor's turn in the cycle.
 constexpr uint32_t POLL_REPLY_TIMEOUT_MS = 300;
 
@@ -86,17 +83,6 @@ enum : uint8_t {
 /// Spacing between the volume broadcast and the keep-alive that follows it.
 constexpr uint32_t VOLUME_KEEPALIVE_GAP_US = 250;
 
-/// Delay between the routing and crossover configuration frames sent to the same monitor.
-constexpr uint32_t CONFIG_FRAME_GAP_MS = 10;
-
-/// Delay before each DSP configuration frame (level, delay) sent to the same monitor.
-///
-/// Shorter than CONFIG_FRAME_GAP_MS on purpose. These gaps are blocking delay() calls inside a
-/// single loop() call, so they add up: at 10 ms each, a subwoofer's full configuration block
-/// would approach the 50 ms at which ESPHome warns about a slow loop. 3 ms is GROUP_FRAME_GAP_MS,
-/// which is the spacing GLM itself uses between the very same frames.
-constexpr uint32_t DSP_FRAME_GAP_MS = 3;
-
 /// Spacing between consecutive frames of a group's DSP block.
 ///
 /// Matches the OEM's own pacing. Monitors acknowledge a PEQ frame in under a millisecond, and
@@ -123,24 +109,6 @@ constexpr uint32_t GROUP_APPLY_TIMEOUT_MS = 15000;
 /// Wake burst opening a group push, one value per frame; see GroupApplyState::preamble_step.
 constexpr uint8_t GROUP_WAKE_SEQUENCE[] = {WAKEUP_VAL_ON_1, WAKEUP_VAL_ON_1, WAKEUP_VAL_ON_2};
 constexpr uint8_t GROUP_WAKE_STEPS = sizeof(GROUP_WAKE_SEQUENCE);
-
-/// Frame sequence positions within one device's DSP block, following the order GLM uses.
-///
-/// The keep-alive leading each block is the OEM's: it emits 0xFF 0x04 immediately before every
-/// device's 0x17 0x01, and once more when the last block finishes. Sending it as an ordinary
-/// step gets GROUP_FRAME_GAP_MS pacing for free.
-enum : uint8_t {
-  GROUP_STEP_KEEPALIVE = 0,                                ///< 0xFF 0x04
-  GROUP_STEP_PREPARE,                                      ///< 0x17 0x01
-  GROUP_STEP_DELAY,                                        ///< 0x10 0x02
-  GROUP_STEP_LEVEL,                                        ///< 0x10 0x01 0x00
-  GROUP_STEP_PEQ_FIRST,                                    ///< 0x10 0x0E, 20 of them
-  GROUP_STEP_CROSSOVER = GROUP_STEP_PEQ_FIRST + PEQ_BAND_COUNT,  ///< 0x3B
-  GROUP_STEP_SOURCE,                                       ///< 0x40, primary input
-  GROUP_STEP_SOURCE_AUX,                                   ///< 0x40, subwoofer LFE input
-  GROUP_STEP_LFE_LEVEL,                                    ///< 0x3E, subwoofer LFE level
-  GROUP_STEP_DONE,
-};
 
 }  // namespace
 
@@ -188,6 +156,7 @@ void GenSAMHub::discover_monitors_() {
   bus_silent_ = false;
 
   ESP_LOGI(TAG, "Resetting monitor table and initiating RACE discovery...");
+  this->reset_volatile_settings_();
 
   // Mark all currently known monitors offline before clearing cache so HA state does not remain stale.
   registry_.invalidate_all();
@@ -267,12 +236,18 @@ void GenSAMHub::complete_rid_assignment_(uint8_t address) {
 }
 
 void GenSAMHub::advance_device_query_() {
-  if (current_query_cmd_ == CMD_SOFTWARE_QUERY) {
+  if (current_query_cmd_ == CMD_SERVICE) {
+    current_query_cmd_ = CMD_SOFTWARE_QUERY;
+  } else if (current_query_cmd_ == CMD_SOFTWARE_QUERY) {
     current_query_cmd_ = CMD_BAR_CODE;
   } else if (current_query_cmd_ == CMD_BAR_CODE) {
     current_query_cmd_ = CMD_DIP_SWITCH;
+  } else if (current_query_cmd_ == CMD_DIP_SWITCH) {
+    current_query_cmd_ = CMD_NAMES_USER;
+  } else if (current_query_cmd_ == CMD_NAMES_USER) {
+    current_query_cmd_ = CMD_WAKEUP;
   } else {
-    current_query_cmd_ = CMD_SOFTWARE_QUERY;
+    current_query_cmd_ = restore_profiles_on_discovery_ ? CMD_SERVICE : CMD_SOFTWARE_QUERY;
     current_poll_index_++;
   }
   current_query_addr_ = 0;
@@ -293,6 +268,7 @@ void GenSAMHub::broadcast_volume_and_keepalive_() {
 // --- Incoming replies to what the state machine sent --------------------------------
 
 bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
+  if (this->handle_speaker_settings_reply_(frame, now)) return true;
   if (this->handle_command_rejection_(frame, now) ||
       this->handle_poll_continuation_(frame, now)) {
     return true;
@@ -360,6 +336,10 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
     }
 
     case RaceState::QUERYING_DEVICES: {
+      const bool restore_reply = current_query_cmd_ == CMD_SERVICE &&
+                                 (frame.command == CMD_REPORT_STATUS || frame.command == CMD_ACK);
+      const bool note_reply = current_query_cmd_ == CMD_NAMES_USER &&
+                              frame.command == CMD_REPORT_STATUS;
       const bool dip_reply = current_query_cmd_ == CMD_DIP_SWITCH &&
                              (frame.command == CMD_DIP_SWITCH ||
                               frame.command == CMD_REPORT_STATUS);
@@ -368,12 +348,27 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
                                   frame.command == CMD_SOFTWARE_QUERY_SHORT ||
                                   frame.command == CMD_SOFTWARE_QUERY ||
                                   frame.command == CMD_BAR_CODE);
-      if (current_query_addr_ == 0 || frame.address != HOST_ADDRESS || frame.payload.empty() ||
-          (!dip_reply && !metadata_reply)) {
+      if (current_query_addr_ == 0 || frame.address != HOST_ADDRESS ||
+          (frame.payload.empty() && !restore_reply && !note_reply) ||
+          (!restore_reply && !note_reply && !dip_reply && !metadata_reply)) {
         return false;
       }
       GenSAMMonitor &mon = registry_.get_or_create(current_query_addr_);
-      if (current_query_cmd_ == CMD_DIP_SWITCH) {
+      if (restore_reply) {
+        if (!frame.payload.empty()) return false;
+        profile_restore_failed_.erase(current_query_addr_);
+      } else if (current_query_cmd_ == CMD_NAMES_USER) {
+        auto &state = speaker_settings_[mon.unique_id];
+        state.note.assign(frame.payload.begin(), frame.payload.end());
+        state.note_known = true;
+      } else if (current_query_cmd_ == CMD_WAKEUP) {
+        if (frame.payload.size() != 1 || frame.payload[0] > 1) {
+          ESP_LOGW(TAG, "Monitor 0x%02X returned no usable stored LED state", mon.address);
+        } else {
+          mon.system_leds_enabled = frame.payload[0] == 0;
+          mon.system_leds_known = true;
+        }
+      } else if (current_query_cmd_ == CMD_DIP_SWITCH) {
         if (!parse_dip_switch_status(frame.payload.data(), frame.payload.size(), mon)) {
           ESP_LOGW(TAG, "Monitor 0x%02X returned no usable DIP status", current_query_addr_);
         } else {
@@ -494,7 +489,7 @@ bool GenSAMHub::handle_active_reply_(const Frame &frame, uint32_t now) {
 // --- State machine ------------------------------------------------------------------
 
 void GenSAMHub::update_race_state_machine_() {
-  if (resuming_) return;
+  if (resuming_ || speaker_transaction_.active) return;
   if (power_off_pending_ && !apply_.active && current_query_addr_ == 0) return;
   if (!can_transmit()) {
     return;
@@ -586,7 +581,7 @@ void GenSAMHub::finish_race_discovery_(uint32_t now) {
   race_step_time_ = now;
   current_poll_index_ = 0;
   current_query_addr_ = 0;
-  current_query_cmd_ = CMD_SOFTWARE_QUERY;
+  current_query_cmd_ = restore_profiles_on_discovery_ ? CMD_SERVICE : CMD_SOFTWARE_QUERY;
   query_retries_ = 0;
 }
 
@@ -637,8 +632,13 @@ void GenSAMHub::race_step_querying_(uint32_t now) {
 
   if (current_poll_index_ < poll_addrs_.size()) {
     current_query_addr_ = poll_addrs_[current_poll_index_];
+    if (current_query_cmd_ == CMD_SERVICE) profile_restore_failed_[current_query_addr_] = true;
     race_step_time_ = now;
-    this->send_frame(make_query(current_query_addr_, current_query_cmd_));
+    const Frame query = current_query_cmd_ == CMD_SERVICE ? make_restore_user_params(current_query_addr_) :
+                        current_query_cmd_ == CMD_NAMES_USER ? make_user_note_read(current_query_addr_) :
+                        current_query_cmd_ == CMD_WAKEUP ? make_iss_read(current_query_addr_, 0x06) :
+                        make_query(current_query_addr_, current_query_cmd_);
+    this->send_frame(query);
     return;
   }
 
@@ -648,119 +648,17 @@ void GenSAMHub::race_step_querying_(uint32_t now) {
   race_step_time_ = now;
   current_poll_index_ = 0;
   current_query_addr_ = 0;
-}
-
-bool GenSAMHub::configure_monitor_(const GenSAMMonitor &mon) {
-  uint8_t addr = mon.address;
-  bool configured_anything = false;
-
-  // 1. Input routing
-  // Note: Transient volume silencing (silence_system_volume_ / restore_system_volume_) is
-  // intentionally omitted here.  Monitors are waking from amplifier standby with internal
-  // amplifiers already muted, so there is no listening signal to protect from switching
-  // transients.  Volume is restored later by the normal post-wakeup volume command.
-  //
-  // Gated on the binding alone: routing is per device, so there is no system-wide source to
-  // fall back on, and a monitor whose input nobody has chosen keeps whatever its own flash
-  // holds rather than being pushed a default.
-  if (mon.binding != nullptr && mon.binding->input_configured) {
-    const uint8_t src = mon.binding->source;
-    const uint8_t ch = mon.binding->aes3_channel;
-    ESP_LOGI(TAG, "Configuring input for monitor 0x%02X: %s", addr, input_to_str(src, ch));
-    this->send_audio_source_frame(addr, src, ch, mon.is_subwoofer());
-    configured_anything = true;
-  }
-
-  // 2. Bass management crossover frequency
-  // Gated on crossover_configured alone, which already means "somebody set this deliberately"
-  // (it defaults false, so an unconfigured monitor is never sent the default frequency).  The
-  // presence of a Home Assistant select entity is not a precondition: a crossover snooped from
-  // GLM sets crossover_configured on a binding that may have no entity at all, and that value
-  // still has to be reapplied here, since monitors reset it when passing through standby.
-  if (mon.binding != nullptr && mon.binding->crossover_configured) {
-    if (configured_anything) {
-      delay(CONFIG_FRAME_GAP_MS);
-    }
-    uint16_t freq = mon.binding->crossover_freq;
-    char buf[CROSSOVER_STR_SIZE];
-    ESP_LOGI(TAG, "Configuring bass management crossover for monitor 0x%02X: %s", addr,
-             crossover_to_str(freq, buf, sizeof(buf)));
-    this->send_frame(make_crossover(addr, freq));
-    configured_anything = true;
-  }
-
-  // 3. DSP level trim and time-of-flight delay
-  //
-  // Redundant whenever groups are configured, since the group re-apply that follows discovery
-  // pushes the same two values a moment later. It is kept because it is the *only* source of
-  // level and delay for a system with no group selected.
-  // Both frames go bare, without a preceding 0x17; see the note in hub.cpp.
-  if (mon.binding != nullptr && mon.binding->level_configured) {
-    if (configured_anything) {
-      delay(DSP_FRAME_GAP_MS);
-    }
-    const float db = mon.binding->level_db;
-    ESP_LOGI(TAG, "Configuring level trim for monitor 0x%02X: %.1f dB", addr, db);
-    this->send_frame(make_level(addr, db));
-    configured_anything = true;
-  }
-
-  if (mon.binding != nullptr && mon.binding->delay_configured) {
-    if (configured_anything) {
-      delay(DSP_FRAME_GAP_MS);
-    }
-    const uint32_t samples = mon.binding->delay_samples;
-    ESP_LOGI(TAG, "Configuring delay for monitor 0x%02X: %u samples", addr, (unsigned) samples);
-    this->send_frame(make_delay(addr, samples));
-    configured_anything = true;
-  }
-
-  return configured_anything;
+  restore_profiles_on_discovery_ = false;
 }
 
 void GenSAMHub::race_step_configuring_(uint32_t now) {
-  if (current_query_addr_ != 0 && now - race_step_time_ > CONFIG_ACK_TIMEOUT_MS) {
-    // Configuration acknowledgement timed out; advance to next monitor
-    current_poll_index_++;
-    current_query_addr_ = 0;
-  }
-
-  if (current_query_addr_ != 0) {
-    return;  // Still waiting on the outstanding acknowledgement
-  }
-
-  // Walk forward until a monitor actually needs configuring; monitors with nothing to
-  // configure are skipped without spending a bus turn on them.
-  while (current_poll_index_ < poll_addrs_.size()) {
-    GenSAMMonitor *mon = registry_.find(poll_addrs_[current_poll_index_]);
-    if (mon != nullptr && this->configure_monitor_(*mon)) {
-      current_query_addr_ = mon->address;
-      race_step_time_ = now;
-      return;
-    }
-    current_poll_index_++;
-  }
-
+  this->resolve_speaker_groups_();
   this->finish_temporary_wake_();
-
-  // Refresh the address leases, and monitor gain too when not in standby
-  this->broadcast_volume_and_keepalive_();
-
-  // A monitor loses its DSP state passing through standby, so whatever group was active has
-  // to be pushed again now rather than only when the user next picks one. pending_group_ may
-  // already hold a different choice made while the system was down; that one wins. Falling
-  // back to the default covers the first discovery after boot, so the speakers are never
-  // left in a state nothing here chose; see set_default_group().
-  if (pending_group_ < 0) {
-    pending_group_ = (selected_group_ >= 0) ? selected_group_ :
-                     ((active_group_ >= 0) ? active_group_ : default_group_);
-  }
   if (pending_group_ >= 0 && this->start_group_apply_(now)) {
     return;
   }
-
-  ESP_LOGI(TAG, "All discovered monitors configured. Entering live telemetry polling loop.");
-  this->queue_runtime_settings_();
+  this->broadcast_volume_and_keepalive_();
+  ESP_LOGI(TAG, "Using speaker settings; entering live telemetry polling loop.");
   race_state_ = RaceState::POLLING_MONITORS;
   this->update_bus_status_();
   last_poll_cycle_time_ = now - poll_interval_ms_;      // Start polling immediately
@@ -806,6 +704,10 @@ bool GenSAMHub::start_group_apply_(uint32_t now) {
   // Let the first frame go immediately, whichever pacing gate it faces: the wake burst's is
   // the wider of the two, so backdating by that clears both.
   apply_.last_tx_ms = now - GROUP_WAKE_GAP_MS;
+  for (uint8_t i = 0; i < group->device_count; i++) {
+    auto &state = speaker_settings_[group->devices[i].unique_id];
+    state = SpeakerSettingsState{};
+  }
 
   // Duck for the duration. The block retunes filters and levels underneath a playing signal,
   // and the OEM ducks for the same reason. Skipped in standby, where there is nothing to
@@ -813,7 +715,7 @@ bool GenSAMHub::start_group_apply_(uint32_t now) {
   //
   // The wake burst is skipped on the same condition, and for the mirror-image reason: waking
   // the speakers because somebody picked a group would be a surprising side effect, and a
-  // group pushed while the system is down is re-pushed by the next wake's discovery anyway.
+  // queued requests normally resume the system before reaching this phase.
   if (!current_standby_ && this->can_transmit()) {
     this->silence_system_volume_();
     apply_.ducked = true;
@@ -835,27 +737,31 @@ void GenSAMHub::finish_group_apply_() {
     this->restore_system_volume_();
   }
 
-  // Only count the group as active if at least one speaker actually received it. A push that
-  // reached nobody - every monitor offline, which happens when a wake from standby reboots
-  // the DSPs and discovery runs before they answer - would otherwise leave Home Assistant
-  // reporting a group the bus has never been told about. Leaving active_group_ alone instead
-  // means the next discovery re-applies, and re-publishing keeps the entity honest until it
-  // does.
+  // A partial or rejected push cannot identify the entire system as this preset.
   const uint8_t attempted = apply_.group_idx;
-  const bool reached_anyone = apply_.configured > 0 && !apply_.rejected;
+  const auto *attempted_group = this->get_group(attempted);
+  const bool reached_anyone = attempted_group != nullptr &&
+                             apply_.configured == attempted_group->device_count && !apply_.rejected;
   const bool rejected = apply_.rejected;
   apply_ = GroupApplyState{};
 
   if (reached_anyone) {
     active_group_ = attempted;
+    external_settings_observed_ = false;
   } else if (rejected) {
     ESP_LOGW(TAG, "Group preset '%s' was not marked active because a monitor rejected a command",
              this->get_group(attempted) != nullptr ? this->get_group(attempted)->name : "?");
   } else {
     const GroupPreset *wanted = this->get_group(attempted);
-    ESP_LOGW(TAG, "Group preset '%s' reached no monitors; leaving it unapplied",
+    ESP_LOGW(TAG, "Group preset '%s' was not fully applied; identity remains unknown",
              wanted != nullptr ? wanted->name : "?");
   }
+  if (!reached_anyone) {
+    active_group_ = -1;
+    for (auto &entry : speaker_settings_) entry.second.group = -1;
+  }
+  note_update_requested_ = true;
+  this->set_store_status_("Unsaved changes");
 
   const GroupPreset *group =
       (active_group_ >= 0) ? this->get_group(static_cast<uint8_t>(active_group_)) : nullptr;
@@ -881,82 +787,17 @@ bool GenSAMHub::send_group_step_(const GenSAMMonitor &mon, const GroupDevice &de
   // keep-alive is skipped along with the rest: one frame is not long enough to need it.
   if (!dev.enabled) {
     if (step == GROUP_STEP_KEEPALIVE) {
-      this->send_frame(make_bypass(addr, true, false, this->live_leds_enabled_(&mon)));
-      return true;
+      return this->send_frame(make_bypass(addr, true, false, this->live_leds_enabled_(&mon)));
     }
     return false;
   }
 
-  // A bypassed monitor gets the values that make each of these frames a no-op, as GLM's "Cal
-  // bypassed" does: flat filters, no trim, no delay. Everything else is still the group's.
-  const bool bypassed = this->is_calibration_bypassed_(mon);
-
-  switch (step) {
-    case GROUP_STEP_KEEPALIVE:
-      this->send_frame(make_stay_online());
-      return true;
-
-    case GROUP_STEP_PREPARE:
-      this->send_frame(make_use_stored_settings(addr));
-      return true;
-
-    case GROUP_STEP_DELAY:
-      this->send_frame(make_delay(addr, bypassed ? 0 : dev.delay_samples));
-      return true;
-
-    case GROUP_STEP_LEVEL:
-      this->send_frame(make_level(addr, bypassed ? 0.0f : dev.level_db));
-      return true;
-
-    case GROUP_STEP_CROSSOVER:
-      this->send_frame(make_crossover(addr, dev.crossover_hz));
-      return true;
-
-    // The two input frames are separate steps rather than one call to
-    // send_audio_source_frame(), which sleeps 5 ms between them. Spacing them as ordinary
-    // steps gets the same gap from the pacing that is already there, without blocking.
-    case GROUP_STEP_SOURCE:
-      this->send_frame(make_audio_source(addr, 0x00, dev.source, dev.aes3_channel));
-      return true;
-
-    case GROUP_STEP_SOURCE_AUX:
-      // Only 7xxx subwoofers have a secondary input, and on them it is the LFE feed rather
-      // than a repeat of the primary: its sub-channel byte is the group's LFE channel, which
-      // is 0 for the stereo and 2.1 groups that have no LFE at all.
-      if (!mon.is_subwoofer()) {
-        return false;
-      }
-      this->send_frame(make_audio_source(addr, 0x01, dev.source, dev.lfe_channel));
-      return true;
-
-    case GROUP_STEP_LFE_LEVEL:
-      // Skipped outright when there is no LFE feed. GLM does send 0x3E 00 00 to a subwoofer
-      // in that case, but the frame only restates a level that applies to nothing, and the
-      // two opcodes that bracket it (0x3C, 0x42) are still unexplained, so a group without
-      // LFE is left exactly as it was rather than half-matching the OEM.
-      if (!mon.is_subwoofer() || dev.lfe_channel == 0) {
-        return false;
-      }
-      this->send_frame(make_lfe_level(addr, dev.lfe_level_db));
-      return true;
-
-    default:
-      break;
-  }
-
-  const uint8_t band = step - GROUP_STEP_PEQ_FIRST;
-  if (band >= PEQ_BAND_COUNT) {
-    return false;
-  }
-  // Slots past the configured bands are still transmitted, as the bypass vector: the monitor
-  // holds whatever the previous group left in them otherwise, and a stale filter is worse
-  // than an unnecessary frame.
-  const PeqBand &spec = (band < dev.band_count && !bypassed) ? dev.bands[band] : PeqBand{};
-  const BiquadCoeffs coeffs =
-      design_biquad(spec.type, spec.frequency_hz, spec.gain_db, spec.q,
-                    dev.peq_design_rate_hz != 0 ? dev.peq_design_rate_hz : peq_design_rate_for(mon));
-  this->send_frame(make_peq_band(addr, band, coeffs));
-  return true;
+  if (step == GROUP_STEP_KEEPALIVE) return this->send_frame(make_stay_online());
+  if (step == GROUP_STEP_MUTE)
+    return this->send_frame(make_bypass(addr, current_mute_, false, this->live_leds_enabled_(&mon)));
+  const Frame frame = make_group_setting_frame(addr, dev, mon.is_subwoofer(), peq_design_rate_for(mon),
+                                              step, this->is_calibration_bypassed_(mon));
+  return frame.command != 0 && this->send_frame(frame);
 }
 
 void GenSAMHub::race_step_applying_group_(uint32_t now) {
@@ -1006,10 +847,7 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
     GenSAMMonitor *mon = registry_.find_by_serial_or_id(std::to_string(dev.unique_id));
 
     if (mon == nullptr || !mon->online) {
-      // Not discovered, or not answering. Skipping is right rather than retrying: the group
-      // is re-applied after every rediscovery, which is when such a monitor comes back. It
-      // is a warning rather than a debug line because until then that speaker is running
-      // some other group's calibration while the rest of the system has moved on.
+      // Partial application must not identify the whole system as this preset.
       ESP_LOGW(TAG, "Group '%s': monitor %lu is not online; it keeps its previous settings",
                group->name, (unsigned long) dev.unique_id);
       apply_.device_idx++;
@@ -1029,8 +867,7 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
       return;
     }
 
-    // Device finished. Mirror what was pushed onto the binding so the per-monitor entities
-    // show the active group's values, and so a later rediscovery re-sends the same thing.
+    // Mirror the live values for the per-monitor entities, not as a rediscovery setpoint.
     // A bypassed monitor mirrors the defaults it was actually sent, not the calibration it was spared.
     if (mon->binding != nullptr && dev.enabled) {
       const bool bypassed = this->is_calibration_bypassed_(*mon);
@@ -1040,6 +877,12 @@ void GenSAMHub::race_step_applying_group_(uint32_t now) {
       registry_.set_binding_delay(*mon->binding, bypassed ? 0 : dev.delay_samples);
     }
     apply_.configured++;
+    auto &state = speaker_settings_[mon->unique_id];
+    state.group = apply_.group_idx;
+    state.modified = this->is_calibration_bypassed_(*mon);
+    state.applied = true;
+    state.dirty = true;
+    mon->mute = dev.enabled ? current_mute_ : true;
     apply_.device_idx++;
     apply_.step = 0;
   }

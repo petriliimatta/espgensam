@@ -29,8 +29,8 @@
 /// 4. Monitor LEDs (GenSAMSystemLEDSwitch):
 ///    Controls the live front-LED state using CMD_BYPASS (0x2B), independently of the stored ISS
 ///    LED preference. GLM's live 0x2B frames and stored 0x3A 06 frames both update the switch.
-///    The setting is persisted on this device and re-asserted after discovery, since the live
-///    state has no readback; until a setting has ever been known the switch shows off.
+///    The setting is volatile until explicit speaker store synchronizes 3A 06 and saves profile 0.
+///    Discovery reads the stored preference where supported; an unavailable value remains unknown.
 ///
 /// 5. Bypass Calibration (GenSAMCalibrationBypassSwitch, GenSAMMonitorCalibrationBypassSwitch):
 ///    GLM's "Calibrated" button, which reads "Cal bypassed" while pressed. Its manual (GLM 5,
@@ -44,14 +44,13 @@
 ///    - There is no opcode for it. Neither a capture nor a setup file has one, so the switch
 ///      re-pushes the active group with the defaults substituted. That reuses the one push
 ///      measured acoustically (docs/glm-group-apply.md section 8), ducks across the retune,
-///      and survives standby and rediscovery, which re-push the group too.
+///      but is reset by rediscovery rather than re-pushed on wake.
 ///    - A monitor is bypassed while either the hub-wide switch or its own is on.
 ///    - Not restored across reboots. GLM treats bypass as temporary, and a bypass left on
 ///      by accident would otherwise go unnoticed after a power cut.
 ///    - Only groups carry calibration, so both switches exist only when groups are
 ///      configured. A GLM push made while bypassed replaces the defaults without this switch
-///      knowing: PEQ frames are not snooped, though the level and delay snoop raises Group
-///      Modified.
+///      knowing: observed external configuration invalidates group identity.
 ///
 /// 6. Bypass Phase Correction (GenSAMPhaseCorrectionBypassSwitch):
 ///    Bypasses the speakers' group-delay (phase-correction) FIR filter with CMD_BYPASS_FILTERS
@@ -122,7 +121,10 @@ class GenSAMSystemLEDSwitch : public switch_::Switch {
   /// @param hub Parent hub.
   void set_hub(GenSAMHub *hub) {
     hub_ = hub;
-    hub_->add_system_led_state_callback([this](bool enabled) { this->publish_state(enabled); });
+    hub_->add_system_led_state_callback([this](bool enabled) {
+      if (hub_->is_system_led_state_known()) this->publish_state(enabled);
+      else this->set_has_state(false);
+    });
     if (hub_->is_system_led_state_known()) {
       this->publish_state(hub_->are_system_leds_enabled());
     }

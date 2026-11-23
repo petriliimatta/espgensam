@@ -183,6 +183,7 @@ class GenSAMHub {
   size_t current_poll_index_ = 0;
   int selected_group_ = 0, default_group_ = 0, pending_group_ = -1;
   struct { bool active = false; } apply_;
+  struct { bool active = false; } speaker_transaction_;
   RaceState race_state_ = RaceState::POLLING_MONITORS;
   Registry registry_;
   Arbiter arbiter_;
@@ -207,6 +208,7 @@ class GenSAMHub {
   void mark_monitor_seen_(Monitor &) {}
   bool handle_command_rejection_(const Frame &, uint32_t) { return false; }
   bool handle_poll_continuation_(const Frame &, uint32_t) { return false; }
+  bool handle_speaker_settings_reply_(const Frame &, uint32_t) { return false; }
   void transmit_volume_() {
     volume_tx_pending_ = false; ++volume_frames; ++transmissions;
   }
@@ -483,11 +485,20 @@ int main() {
   GenSAMHub reboot;
   reboot.max_volume_db_ = -50;
   reboot.restore_control_state_();
-  assert(reboot.current_volume_db_ == -50 && reboot.default_group_ == 1);
+  assert(reboot.current_volume_db_ == -50 && reboot.selected_group_ == -1);
+  assert(reboot.default_group_ == 0);  // The catalog default is not restored from preferences.
   GenSAMHub new_upload;
   new_upload.group_generation_ = 6;
   new_upload.restore_control_state_();
-  assert(new_upload.default_group_ == 0 && new_upload.selected_group_ == 0);
+  assert(new_upload.default_group_ == 0 && new_upload.selected_group_ == -1);
+  GenSAMHub storing;
+  storing.speaker_transaction_.active = true;
+  storing.volume_tx_pending_ = true;
+  storing.user_commands_.push_back([&]() { assert(false); });
+  storing.service_pending_writes_(100);
+  storing.service_user_commands_(100);
+  storing.update_race_state_machine_();
+  assert(storing.transmissions == 0 && storing.race_steps == 0);
   saved.control_preference_.fail = true;
   const int save_warning = warnings;
   saved.save_control_state_();

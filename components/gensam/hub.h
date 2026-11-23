@@ -38,7 +38,8 @@
 ///    - STANDBY (Power OFF): Transmits {0x03, 0x02} twice (20 ms spacing), waits 80 ms, then
 ///      transmits {0x03, 0x00} twice (20 ms spacing).
 ///    - Active Boot: Normal controller mode wakes monitors during initial discovery, restoring
-///      remembered volume/group (startup_volume_db on first boot). It then polls indefinitely
+///      speaker profile 0 and only the remembered master volume (startup_volume_db on first boot).
+///      It then polls indefinitely
 ///      and manages ISS sleep itself (section 8). Listen-only never transmits, including boot.
 ///      Discovery always begins with a wake, as GLM does.
 ///    - User commands: volume and mute are held while the system is asleep, off or powering
@@ -48,7 +49,7 @@
 ///    - Explicit Power Off cancels queued controls, waits for a safe slot, sends shutdown, and
 ///      keeps the bus silent (stale telemetry, no discovery) until a waking command.
 ///    - GLM takeover: the hub yields the bus. Once GLM has been quiet for the cooldown it
-///      rediscovers and reapplies the selected group, unless the system was powered off.
+///      rediscovers and reads speaker identity without reapplying a group, unless powered off.
 ///    - Address leases: continuous keep-alives hold them. They lapse only across sleep,
 ///      standby or a GLM takeover, and each of those ends in rediscovery.
 ///    - Volatile Address Reset across Standby Wakeup: When waking from standby, monitors reboot
@@ -92,10 +93,9 @@
 ///    Instead the setters only *accept*: they record the latest target and return. Volume and
 ///    mute publish on acceptance; the monitor LED switch publishes only after its live command
 ///    has gone out, or the state is snooped from GLM.
-///    The last known LED setting is persisted on this device and restored at boot, because the
-///    live 0x2B state cannot be read back. It is re-queued after discovery and group pushes so a
-///    speaker restart on wake does not replace it with the stored GLM LED preference. Until a
-///    setting has ever been known, discovery leaves the speakers' LED preference alone.
+///    The live LED setting is volatile. Discovery reads the speaker's stored LED preference
+///    where supported; an unsupported query leaves it unknown. Explicit store synchronizes
+///    a known live LED choice to 3A 06 before saving the speaker's working profile.
 ///    Mute and identify frames are 0x2B frames too, so they carry the live LED setting rather
 ///    than re-enabling the LEDs.
 ///    loop() transmits requests when the bus is in a safe slot - polling or idle, no reply
@@ -116,22 +116,26 @@
 ///    must not reach the bus 15 s later over GLM's own setting), a sniffed GLM setting supersedes
 ///    it, and standby cancels pending volume (a volume broadcast re-establishes amplifier gain).
 ///
-/// 7. Runtime-Only Speaker Settings (ISS & Phase-Correction Bypass):
+/// 7. Volatile Speaker Settings (ISS & Phase-Correction Bypass):
 ///    set_iss_sleep_delay(), set_iss_threshold() and set_phase_correction_bypass() use the same
-///    deferred path as the monitor LEDs, after them in priority. What they change does not
-///    survive a speaker restart, and this component never sends the CMD_SERVICE store that
-///    would make it survive (see iss.h). A speaker restarts on every wake from ISS sleep, so
-///    queue_runtime_settings_() queues them again each time the bus returns to polling after a
-///    discovery or group push. That works because the hub is talking to the speakers at every
-///    wake. A runtime 3A 01 write takes effect immediately without
-///    the store (verified on 8351B firmware 1.24).
-///    - ISS overrides are broadcast, as GLM sends them, and persisted on this device in their
-///      own preference slot. "Speaker default" stops overriding and sends nothing.
-///    - The phase-correction bypass (CMD_BYPASS_FILTERS, FILTER_BYPASS_PHASE_EQ) goes unicast
-///      to each monitor and is not persisted, like the calibration bypass. Only the "on" state
-///      is re-sent; a restarted speaker is already unbypassed.
-///    - None of these frames are snooped. A GLM change is overwritten by an active override at
-///      the next discovery; with "Speaker default" or the bypass off, GLM's setting stands.
+///    deferred path as the monitor LEDs, after them in priority. Edits remain volatile until
+///    an explicit store; discovery discards previously applied overlays, but preserves new
+///    requests still waiting to be sent. No group/calibration is implicitly pushed on wake.
+///    A runtime 3A 01 write takes effect without a store (verified on 8351B firmware 1.24).
+///    - ISS overrides are broadcast, as GLM sends them, and are not persisted by the ESP.
+///      "Speaker default" stops overriding and sends nothing; profile reload restores it.
+///    - Phase correction and calibration bypass are session controls. Store is blocked while
+///      either is enabled so an audition cannot overwrite the saved calibration.
+///    - The uploaded preset catalog persists independently. Only master volume is saved and
+///      resumed by the ESP; old group, ISS and LED preferences are ignored.
+///
+///    Explicit store serializes known LED synchronization, a 21-byte user-note tag, exact
+///    note readback, 15 33 00, and a final note read. It waits for pending writes and requires
+///    every participating speaker to be online, unmuted and unbypassed. Commits are never
+///    retried and are not atomic across speakers; failures report acknowledged partial commits.
+///    Group identity is fingerprint metadata, not independent readback of every DSP field.
+///    Observed external writes invalidate identity. An unobserved GLM upload retaining an
+///    old note can leave a stale tag; see speaker_settings.h for the reference's limits.
 ///
 /// 8. Hub-Managed ISS Sleep:
 ///    A speaker's own ISS cannot work under continuous polling: every CMD_QUERY_STATUS resets
@@ -172,7 +176,9 @@
 
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/helpers.h"
 #include "esphome/core/preferences.h"
+#include "speaker_settings.h"
 #include "arbiter.h"
 #include "const.h"
 #include "frame.h"
@@ -229,6 +235,11 @@ enum class RaceState : uint8_t {
 /// driven one frame at a time from the state machine, with @ref step naming the position
 /// within a device's block and @ref device_idx the device.  Nothing here is persistent state:
 /// it is scratch for the duration of the push.
+///
+/// One frame per loop() call would tie the pace to ESPHome's default ~16 ms loop interval,
+/// stretching a two-speaker push to well over a second of ducked audio. While a push is
+/// active the hub therefore requests a high-frequency loop, so the pace is the OEM's
+/// GROUP_FRAME_GAP_MS spacing rather than the scheduler's.
 ///
 /// A push opens with a three-frame wake burst, counted off by @ref preamble_step before the
 /// device loop begins; see docs/glm-group-apply.md for why the OEM sends one on every switch
@@ -352,7 +363,9 @@ class GenSAMHub : public Component {
   bool replace_runtime_group_table(const GroupPreset *groups, uint8_t count);
 
   /// @brief Whether a group push currently depends on the active table's storage.
-  bool is_group_apply_in_progress() const { return apply_.active || pending_group_ >= 0; }
+  bool is_group_apply_in_progress() const {
+    return apply_.active || pending_group_ >= 0 || speaker_transaction_.active || store_requested_;
+  }
 
   /// @brief Number of configured group presets; 0 when the feature is unused.
   uint8_t get_group_count() const { return group_count_; }
@@ -378,31 +391,6 @@ class GenSAMHub : public Component {
   /// @brief Index of the group last applied, or -1 if none has been.
   int get_active_group_index() const { return active_group_; }
 
-  /// @brief Set the group applied automatically once discovery completes.
-  ///
-  /// Configuring groups but applying none would leave the speakers in whatever state they
-  /// were last left in - by GLM, by a previous group, or by their stored flash settings -
-  /// with the select entity reading "unknown" and no way to tell which.  Picking one by
-  /// default makes the state on the bus match what Home Assistant shows.
-  ///
-  /// There is also little to preserve by not doing it.  A monitor left to itself applies the
-  /// settings in its own flash, but that is documented as what happens when it is powered up
-  /// *without* a host; enumerating it hands its DSP to whoever is managing the bus.  GLM
-  /// behaves accordingly, pushing a complete DSP block after every enumeration rather than
-  /// only after a power cycle, and waking a monitor out of standby reboots its DSP and takes
-  /// the volatile settings with it.  By the time discovery here has finished, what the
-  /// filters hold is not something to rely on, and programming them is the only way to know.
-  ///
-  /// This is still deliberately unlike the audio source select, which stays unconfigured at
-  /// boot so it cannot overwrite a monitor's stored routing.  Callers who want that same
-  /// caution applied to the calibration can leave this unset.
-  /// @param index Preset index to apply on startup.
-  void set_default_group(uint8_t index) { default_group_ = index; }
-
-  /// @brief Set the uploaded setup generation used to scope restored group selections.
-  /// @param generation Flash-slot sequence; a new upload starts with its first group.
-  void set_group_generation(uint32_t generation) { group_generation_ = generation; }
-
   /// @brief Whether the bus is silent after an explicit power off; telemetry is then stale.
   bool is_bus_silent() const { return bus_silent_; }
 
@@ -418,6 +406,31 @@ class GenSAMHub : public Component {
   /// @brief Make a group preset active by its configured name.
   /// @param name Name to match, as it appears in the select entity.
   void set_active_group_by_name(const std::string &name);
+
+  /// @brief Queue an explicit profile-0 store of all discovered speakers' current settings.
+  ///
+  /// Waits for pending changes, refuses calibration/phase bypass and mute, verifies each note
+  /// before its flash commit, and reports failures/partial completion through the status callback.
+  /// Volume is never changed to a startup level by this action.
+  void store_speaker_settings();
+
+  /// @brief Current preset identity inferred from notes and observed changes, not DSP readback.
+  const std::string &get_active_settings() const { return active_settings_; }
+
+  /// @brief Most recent explicit store result or progress.
+  const std::string &get_store_status() const { return store_status_; }
+
+  /// @brief Observe aggregate preset identity changes.
+  /// @param cb Callback receiving the display state.
+  void add_settings_callback(std::function<void(const std::string &)> cb) {
+    settings_callbacks_.push_back(std::move(cb));
+  }
+
+  /// @brief Observe store progress and errors.
+  /// @param cb Callback receiving the display state.
+  void add_store_status_callback(std::function<void(const std::string &)> cb) {
+    store_status_callbacks_.push_back(std::move(cb));
+  }
 
   /// @brief Register the optional group preset select entity.
   void set_group_select(select::Select *sel) { group_select_ = sel; }
@@ -466,7 +479,7 @@ class GenSAMHub : public Component {
     state_callbacks_.push_back(std::move(cb));
   }
 
-  /// @brief Register a callback for monitor LED enable state changes.
+  /// @brief Register LED changes; check is_system_led_state_known() before using the value.
   void add_system_led_state_callback(std::function<void(bool)> cb) {
     system_led_state_callbacks_.push_back(std::move(cb));
   }
@@ -523,8 +536,8 @@ class GenSAMHub : public Component {
 
   /// @brief Request an ISS sleep-delay override for every monitor.
   ///
-  /// Deferred like set_system_leds_enabled(), persisted on this device, and re-sent after every
-  /// discovery and group push because the speakers keep it only until their next restart.
+  /// Deferred like set_system_leds_enabled(), volatile until explicit speaker store.
+  /// Applied overlays are discarded at rediscovery; new pending requests survive it.
   /// See section 7 of the header comment.
   /// @param minutes Delay in minutes, ISS_SLEEP_DELAY_NEVER, or ISS_SLEEP_DELAY_DEFAULT to stop
   ///        overriding (nothing is sent; the speakers revert at their next restart).
@@ -545,8 +558,8 @@ class GenSAMHub : public Component {
   /// @brief Request the phase-correction (group-delay FIR) bypass on every monitor.
   ///
   /// Sends CMD_BYPASS_FILTERS with FILTER_BYPASS_PHASE_EQ or FILTER_BYPASS_NONE, deferred like
-  /// the other system controls and re-sent after every discovery and group push while on. Not
-  /// persisted: every boot starts with phase correction active. See section 7 of the header.
+  /// the other system controls. Not persisted: rediscovery resets applied bypasses, and store
+  /// is blocked while bypassed. See section 7 of the header.
   /// @param bypass True to bypass the phase-correction filter, false to restore it.
   void set_phase_correction_bypass(bool bypass);
 
@@ -761,26 +774,12 @@ class GenSAMHub : public Component {
   /// Clears filter_bypass_tx_pending_ only when every monitor received it.
   void transmit_filter_bypass_();
 
-  /// @brief Queue the runtime-only settings again after a discovery or group push.
+  /// @brief Queue current volatile overlays after a group push or discovery reset.
   ///
-  /// Called where the bus returns to polling, since a monitor that restarted has lost them.
+  /// Discovery clears applied overlays first, preserving only new requests awaiting transmission.
   void queue_runtime_settings_();
 
-  /// @brief Load the ISS overrides from their own preference slot.
-  void restore_iss_state_();
-
-  /// @brief Persist the ISS overrides.
-  void save_iss_state_();
-
-  /// @brief Load the last known monitor LED setting and publish it.
-  ///
-  /// The speakers have no readback for the live 0x2B LED state, so without this a reboot of
-  /// this device would leave the switch reporting off (ESPHome's default) over lit LEDs.
-  /// A restored setting counts as known, so queue_runtime_settings_() re-asserts it after
-  /// discovery and the speakers are brought back in line with what is shown.
-  void restore_system_led_state_();
-
-  /// @brief Record @p enabled as the setting the speakers now have, persist it and publish it.
+  /// @brief Record @p enabled as the current volatile LED state and publish it.
   void commit_system_led_state_(bool enabled);
 
   /// @brief The live LED setting a 0x2B frame to @p mon must carry.
@@ -896,11 +895,6 @@ class GenSAMHub : public Component {
   /// How a calibration bypass change reaches the speakers. A request already pending is left
   /// alone, since it will read the new state when it runs.
   void request_group_repush_();
-
-  /// @brief Transmit one monitor's audio source and crossover configuration.
-  /// @param mon The monitor to configure.
-  /// @return True if any configuration frame was sent, false if the monitor needed nothing.
-  bool configure_monitor_(const GenSAMMonitor &mon);
 
   /// @brief Return monitors to standby after a discovery cycle that woke them only to enumerate.
   ///
@@ -1031,9 +1025,65 @@ class GenSAMHub : public Component {
   void service_user_commands_(uint32_t now);
   /// @brief Wake/discover after cached-address recovery fails or reports standby.
   void discover_monitors_();
-  /// @brief Save and restore user volume/group intent in ESP preferences, never speaker flash.
+  /// @brief Save only master volume in ESP preferences, never speaker flash.
   void save_control_state_();
+  /// @brief Restore/clamp volume, ignoring legacy group selections.
   void restore_control_state_();
+
+  /// @brief Reset volatile controller overlays before querying speaker profiles.
+  void reset_volatile_settings_();
+  /// @brief Match per-speaker note fingerprints to the current group catalog.
+  void resolve_speaker_groups_();
+  /// @brief Record configuration writes; external ones invalidate the preset identity.
+  void record_setting_frame_(const Frame &frame, bool external);
+  /// @brief Advance a safe, acknowledged note update or explicit profile store.
+  void service_speaker_settings_(uint32_t now);
+  /// @brief Consume only the outstanding speaker-settings transaction reply.
+  bool handle_speaker_settings_reply_(const Frame &frame, uint32_t now);
+  /// @brief Report and abandon a transaction, including the number of completed commits.
+  void fail_speaker_settings_(const std::string &reason);
+  /// @brief Publish store progress or errors.
+  void set_store_status_(const std::string &value);
+  /// @brief Publish aggregate identity without assuming all speakers share one preset.
+  void publish_active_settings_();
+
+  /// @brief Volatile observed settings and identity for one stable hardware ID.
+  struct SpeakerSettingsState {
+    std::string note;                 ///< Last read or verified working user note.
+    bool note_known{false};           ///< True after a successful note read, including empty notes.
+    int group{-1};                   ///< Unique matching catalog entry, or -1.
+    bool modified{false};            ///< Configuration changed since a complete preset push.
+    bool applied{false};             ///< A complete preset was observed being sent in this session.
+    bool dirty{false};               ///< Live settings have not been explicitly committed.
+    std::map<uint32_t, Frame> frames; ///< Latest known setting payloads; unknown fields are omitted.
+  };
+
+  /// @brief One serialized note/store transaction; no unrelated TX shares its reply slot.
+  struct SpeakerSettingsTransaction {
+    bool active{false};              ///< True while a note or store operation is in flight.
+    bool store{false};               ///< Explicit store; otherwise only update volatile metadata.
+    bool awaiting{false};            ///< Waiting for this phase's reply.
+    uint8_t phase{0};                ///< LED sync, note write, note verify, commit, post-commit verify.
+    uint8_t retries{0};              ///< Retries of a lost read/write; commits are never retried.
+    size_t index{0};                 ///< Current target.
+    size_t committed{0};             ///< Flash commits acknowledged so far.
+    uint32_t sent_ms{0};             ///< Reply timeout origin.
+    uint32_t keepalive_ms{0};        ///< Last lease refresh during a multi-speaker transaction.
+    std::vector<uint8_t> addresses;  ///< Snapshot of participating leased addresses.
+    std::string note;                ///< Expected complete identity note.
+  };
+
+  std::map<uint32_t, SpeakerSettingsState> speaker_settings_; ///< State keyed by stable UID.
+  SpeakerSettingsTransaction speaker_transaction_{}; ///< Current serialized operation.
+  bool store_requested_{false};      ///< Explicit user request waiting for a safe slot.
+  bool note_update_requested_{false};///< Current live settings need a volatile identity tag.
+  bool restore_profiles_on_discovery_{true}; ///< Cold boot/explicit restore loads profile 0 once.
+  bool external_settings_observed_{false}; ///< Invalidates tags after an observed GLM write.
+  std::map<uint8_t, bool> profile_restore_failed_; ///< Profile loads awaiting or lacking an ACK.
+  std::string active_settings_{"Unknown"}; ///< Metadata identity exposed through callbacks.
+  std::string store_status_{"Idle"};  ///< Last store result/progress.
+  std::vector<std::function<void(const std::string &)>> settings_callbacks_;
+  std::vector<std::function<void(const std::string &)>> store_status_callbacks_;
 
   Rs485Profile rs485_{};
   uint32_t baud_rate_{BAUDRATE};
@@ -1046,11 +1096,8 @@ class GenSAMHub : public Component {
   bool power_off_pending_{false};
   bool executing_user_command_{false};
   std::vector<std::function<void()>> user_commands_;
-  uint32_t group_generation_{0};
   int selected_group_{-1};
   ESPPreferenceObject control_preference_;
-  ESPPreferenceObject iss_preference_;  ///< Separate from control_preference_ so its layout can change alone.
-  ESPPreferenceObject system_led_preference_;
   bool yield_to_glm_{true};
   uint32_t glm_inactivity_cooldown_ms_{30000};
   uint32_t poll_interval_ms_{1000};
@@ -1073,12 +1120,8 @@ class GenSAMHub : public Component {
   uint8_t group_count_{0};
   select::Select *group_select_{nullptr};
 
-  /// Group last pushed to the monitors, or -1 if none. Re-applied after every rediscovery,
-  /// because a monitor loses its DSP state passing through standby.
+  /// Preset identified across the speakers, or -1 for unknown/mixed settings; never auto-applied.
   int active_group_{-1};
-
-  /// Group to apply once discovery first completes, or -1 to apply none.
-  int default_group_{-1};
 
   /// Group waiting to be pushed, or -1 if none. Separate from active_group_ so that a switch
   /// requested while the bus is unavailable is not lost, and so a second request during a
@@ -1086,6 +1129,11 @@ class GenSAMHub : public Component {
   int pending_group_{-1};
 
   GroupApplyState apply_{};
+
+  /// Held while @ref apply_ is active, so the push is paced by GROUP_FRAME_GAP_MS rather than
+  /// the loop interval; see GroupApplyState. Synced in loop(), which covers every path that
+  /// ends a push.
+  HighFrequencyLoopRequester group_apply_loop_;
 
   // Active RACE & query state machine
   RaceState race_state_{RaceState::IDLE};

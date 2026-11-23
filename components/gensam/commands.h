@@ -95,11 +95,27 @@ bool parse_iss_word(const std::vector<uint8_t> &payload, int32_t &value);
 
 /// @brief Build a store-working-settings frame (CMD_SERVICE 0x15, SERVICE_STORE_USER_PARS).
 ///
-/// Writes the speaker's working settings into its stored start-up profile. Never sent by this
-/// component; see const.h.
+/// Writes the speaker's working settings into its stored start-up profile. Only the explicit
+/// store action sends it, after verifying the identity note.
 /// @param addr Target monitor address.
 /// @return CMD_SERVICE frame carrying [0x33, SERVICE_PROFILE_DEFAULT].
 Frame make_store_user_params(uint8_t addr);
+
+/// @brief Load profile 0, without exposing the service's destructive erase arguments.
+/// @param addr Target monitor address.
+/// @return CMD_SERVICE frame carrying [0x34, SERVICE_PROFILE_DEFAULT].
+Frame make_restore_user_params(uint8_t addr);
+
+/// @brief Read the user note field; its reply is CMD_REPORT_STATUS with the note bytes.
+/// @param addr Target monitor address.
+/// @return CMD_NAMES_USER frame carrying [0x81].
+Frame make_user_note_read(uint8_t addr);
+
+/// @brief Write a volatile user note; an empty note is explicitly NUL-terminated to clear it.
+/// @param addr Target monitor address.
+/// @param note ASCII identity tag; stored only by make_store_user_params().
+/// @return CMD_NAMES_USER frame carrying [0x01, note bytes].
+Frame make_user_note_write(uint8_t addr, const std::string &note);
 
 /// @brief Build a filter-bypass frame (CMD_BYPASS_FILTERS 0x53).
 /// @param addr Target monitor address.

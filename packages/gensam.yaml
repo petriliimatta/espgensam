@@ -32,6 +32,21 @@ gensam:
     web_server:
       sorting_group_id: group_controls
       sorting_weight: 30
+  active_settings:
+    name: "Active Speaker Settings"
+    web_server:
+      sorting_group_id: group_controls
+      sorting_weight: 31
+  store_settings_button:
+    name: "Store Settings to Speakers"
+    web_server:
+      sorting_group_id: group_controls
+      sorting_weight: 32
+  store_status:
+    name: "Speaker Store Status"
+    web_server:
+      sorting_group_id: group_controls
+      sorting_weight: 33
   rx_buffer_size: 512
   listen_only: ${listen_only}
   glm_inactivity_cooldown: 15s

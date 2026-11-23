@@ -56,6 +56,7 @@ static constexpr uint8_t CMD_SWITCH_BYPASS = 0x2D;    ///< Accepted, no effect, 
 static constexpr uint8_t CMD_DSP = 0x10;              ///< DSP parameter update (PEQ, delay, level)
 static constexpr uint8_t CMD_NET_SETTINGS = 0x17;     ///< 17 01 = use stored settings, not DIP switches
 static constexpr uint8_t CMD_SOFTWARE_QUERY = 0x39;   ///< Long system info: model, firmware version
+static constexpr uint8_t CMD_NAMES_USER = 0x51;       ///< User name/notes; 01 writes notes, 81 reads notes
 static constexpr uint8_t CMD_WAKEUP = 0x3A;           ///< ISS settings and wakeup / standby control
 static constexpr uint8_t CMD_BASS_MANAGE_XO = 0x3B;   ///< Bass management: crossover in Hz, or CROSSOVER_FULL_BAND
 static constexpr uint8_t CMD_BASS_ANALOG_FILTER = 0x3C; ///< Analogue bass high-pass; see the block below
@@ -88,6 +89,9 @@ static constexpr uint8_t SERVICE_STORE_USER_PARS = 0x33;
 static constexpr uint8_t SERVICE_RESTORE_USER_PARS = 0x34;
 /// Profile 0, the one a speaker loads at start-up.
 static constexpr uint8_t SERVICE_PROFILE_DEFAULT = 0x00;
+static constexpr const char *SPEAKER_SETTINGS_OPTION = "Speaker settings"; ///< Restore stored profiles, not a preset.
+/// Reply deadline for serialized note/profile storage, including potentially slow flash ACKs.
+static constexpr uint32_t SPEAKER_SETTINGS_REPLY_TIMEOUT_MS = 500; ///< Restore stored profiles, not a preset.
 ///@}
 
 // --- Opcodes GLM sends that this component does not -----------------------
@@ -351,9 +355,9 @@ static constexpr uint8_t WAKEUP_VAL_STANDBY_2 = 0x00;      ///< Short-press/togg
 ///  - Every status query (0x08) resets the idle timer, which is why the hub runs the sleep
 ///    policy itself (hub.h section 8).
 ///
-/// GLM follows each edit with SERVICE_STORE_USER_PARS. This component does not: the values are
-/// working settings only, and a speaker reloads its stored ones whenever it restarts, which
-/// includes every wake from sleep or standby. The hub re-sends them after each discovery.
+/// GLM follows each edit with SERVICE_STORE_USER_PARS. This component stores only on an explicit
+/// user request. Otherwise a speaker reloads its saved values on restart/wake, and the ESP
+/// discards applied overlays rather than re-sending them at discovery.
 ///@{
 static constexpr uint32_t ISS_SLEEP_DELAY_NEVER = 0xFFFFFFFF;
 static constexpr uint32_t ISS_SLEEP_DELAY_MAX_MIN = 14400;

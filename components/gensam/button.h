@@ -1,7 +1,7 @@
 #pragma once
 
 /// @file button.h
-/// @brief ESPHome Button entity implementations for Genelec SAM speaker identification and discovery.
+/// @brief ESPHome buttons for speaker identification, discovery and explicit settings storage.
 ///
 /// ===================================================================================
 /// ARCHITECTURAL DESIGN RATIONALE
@@ -64,6 +64,24 @@ class GenSAMRediscoverButton : public button::Button {
   }
 
   GenSAMHub *hub_{nullptr};
+};
+
+/// @brief Explicitly stores current speaker working settings to profile 0.
+///
+/// This is not the SAM catalog save action. It delegates safe sequencing and error reporting
+/// to the hub; bypassed or muted speakers must be restored before their calibration is saved.
+class GenSAMStoreSettingsButton : public button::Button {
+ public:
+  /// @brief Set the parent protocol hub.
+  /// @param hub Parent hub.
+  void set_hub(GenSAMHub *hub) { hub_ = hub; }
+
+ protected:
+  void press_action() override {
+    if (hub_ != nullptr) hub_->store_speaker_settings();
+  }
+
+  GenSAMHub *hub_{nullptr}; ///< Parent hub.
 };
 
 }  // namespace gensam

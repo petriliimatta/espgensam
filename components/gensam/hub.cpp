@@ -63,17 +63,6 @@ struct StoredControlState {
   int32_t group;
 };
 
-/// Persisted ISS overrides; the *_DEFAULT sentinels mean "not overriding".
-struct StoredIssState {
-  uint32_t sleep_delay_min;
-  int32_t threshold_dbu;
-};
-
-/// Persisted live monitor LED setting; only written once a setting is known.
-struct StoredSystemLedState {
-  uint8_t enabled;
-};
-
 }  // namespace
 
 void GenSAMHub::assert_output_pin_(int pin, bool active_high, bool pull_up,
@@ -136,8 +125,6 @@ void GenSAMHub::setup() {
 
   current_volume_db_ = startup_volume_db_;
   this->restore_control_state_();
-  this->restore_iss_state_();
-  this->restore_system_led_state_();
   last_tx_volume_db_ = current_volume_db_;
   last_user_command_ms_ = millis();
   if (volume_number_ != nullptr) {
@@ -168,16 +155,6 @@ void GenSAMHub::setup() {
     iss_threshold_select_->publish_state(name != nullptr ? name : ISS_STR_SPEAKER_DEFAULT);
   }
 
-  // Show the group that discovery is about to apply, rather than leaving the entity unknown
-  // for the ten seconds or so until it lands. Suppressed in listen-only mode, where nothing
-  // will be transmitted and naming a group would assert something untrue about the bus.
-  if (!listen_only_ && default_group_ >= 0 && group_select_ != nullptr) {
-    const GroupPreset *group = this->get_group(static_cast<uint8_t>(default_group_));
-    if (group != nullptr && group_select_->has_option(group->name)) {
-      group_select_->publish_state(group->name);
-    }
-  }
-
   this->update_bus_status_();
 
   ESP_LOGI(TAG, "GenSAM Hub initialized successfully (baud=%lu, TX=%s, RX=GPIO%d, yield_to_glm=%s, cooldown=%u ms)",
@@ -197,7 +174,6 @@ void GenSAMHub::set_active_group(uint8_t index) {
     return;
   }
   selected_group_ = index;
-  this->save_control_state_();
 
   // Record the request rather than transmitting here. The push is hundreds of frames and has
   // to be paced, and this is called from a Home Assistant callback which must return promptly.
@@ -214,6 +190,14 @@ void GenSAMHub::set_active_group(uint8_t index) {
 }
 
 void GenSAMHub::set_active_group_by_name(const std::string &name) {
+  if (name == SPEAKER_SETTINGS_OPTION) {
+    if (this->defer_user_command_([this]() { this->set_active_group_by_name(SPEAKER_SETTINGS_OPTION); }))
+      return;
+    pending_group_ = -1;
+    restore_profiles_on_discovery_ = true;
+    this->discover_monitors_();
+    return;
+  }
   const int index = this->find_group_index(name);
   if (index < 0) {
     ESP_LOGW(TAG, "Ignoring unknown group preset '%s'", name.c_str());
@@ -237,7 +221,6 @@ bool GenSAMHub::replace_runtime_group_table(const GroupPreset *groups, uint8_t c
   }
   groups_ = groups;
   group_count_ = count;
-  default_group_ = -1;
   active_group_ = -1;
   pending_group_ = -1;
   apply_ = GroupApplyState{};
@@ -253,68 +236,90 @@ void GenSAMHub::restore_control_state_() {
     } else {
       ESP_LOGW(TAG, "Stored volume is invalid; using configured startup volume");
     }
-    if (state.generation == group_generation_ && state.group >= 0 && state.group < group_count_) {
-      default_group_ = state.group;
-    }
   }
-  selected_group_ = default_group_;
+  selected_group_ = -1;
 }
 
 void GenSAMHub::save_control_state_() {
-  const StoredControlState state{current_volume_db_, group_generation_, selected_group_};
+  // Retain the old slot layout so upgrades can recover volume, but never restore group intent.
+  const StoredControlState state{current_volume_db_, 0, -1};
   if (!control_preference_.save(&state)) {
-    ESP_LOGW(TAG, "Could not persist volume/group selection");
+    ESP_LOGW(TAG, "Could not persist volume");
   }
-}
-
-void GenSAMHub::restore_iss_state_() {
-  iss_preference_ = global_preferences->make_preference<StoredIssState>(0x47534932);
-  StoredIssState state{};
-  if (!iss_preference_.load(&state)) {
-    return;
-  }
-  // Only values the selects offer are restored, so a corrupt slot cannot send an odd word.
-  if (iss_option_name(ISS_SLEEP_DELAY_OPTIONS, state.sleep_delay_min) != nullptr) {
-    iss_sleep_delay_ = state.sleep_delay_min;
-  }
-  if (iss_option_name(ISS_THRESHOLD_OPTIONS, state.threshold_dbu) != nullptr) {
-    iss_threshold_ = state.threshold_dbu;
-  }
-}
-
-void GenSAMHub::save_iss_state_() {
-  const StoredIssState state{iss_sleep_delay_, iss_threshold_};
-  if (!iss_preference_.save(&state)) {
-    ESP_LOGW(TAG, "Could not persist ISS settings");
-  }
-}
-
-void GenSAMHub::restore_system_led_state_() {
-  system_led_preference_ = global_preferences->make_preference<StoredSystemLedState>(0x47534C33);
-  StoredSystemLedState state{};
-  if (!system_led_preference_.load(&state) || state.enabled > 1) {
-    return;
-  }
-  current_system_leds_enabled_ = last_tx_system_leds_enabled_ = state.enabled != 0;
-  system_led_state_known_ = true;
-  for (auto &callback : system_led_state_callbacks_) {
-    callback(current_system_leds_enabled_);
-  }
-  ESP_LOGD(TAG, "Restored monitor LED setting: %s", YESNO(current_system_leds_enabled_));
 }
 
 void GenSAMHub::commit_system_led_state_(bool enabled) {
-  const bool changed = !system_led_state_known_ || last_tx_system_leds_enabled_ != enabled;
   last_tx_system_leds_enabled_ = enabled;
   system_led_state_known_ = true;
-  if (changed) {
-    const StoredSystemLedState state{static_cast<uint8_t>(enabled ? 1 : 0)};
-    if (!system_led_preference_.save(&state)) {
-      ESP_LOGW(TAG, "Could not persist monitor LED setting");
-    }
-  }
   for (auto &callback : system_led_state_callbacks_) {
     callback(current_system_leds_enabled_);
+  }
+}
+
+void GenSAMHub::reset_volatile_settings_() {
+  speaker_settings_.clear();
+  profile_restore_failed_.clear();
+  active_group_ = selected_group_ = -1;
+  note_update_requested_ = false;
+  system_led_state_known_ = false;
+  for (auto &callback : system_led_state_callbacks_) callback(current_system_leds_enabled_);
+  if (!iss_tx_pending_) {
+    iss_sleep_delay_ = ISS_SLEEP_DELAY_DEFAULT;
+    iss_threshold_ = ISS_THRESHOLD_DEFAULT;
+    if (iss_sleep_delay_select_ != nullptr) iss_sleep_delay_select_->publish_state("Speaker default");
+    if (iss_threshold_select_ != nullptr) iss_threshold_select_->publish_state("Speaker default");
+  }
+  calibration_bypass_ = false;
+  if (!filter_bypass_tx_pending_) phase_correction_bypass_ = false;
+  if (!mute_tx_pending_) current_mute_ = false;
+  if (calibration_bypass_switch_ != nullptr) calibration_bypass_switch_->publish_state(false);
+  if (phase_correction_bypass_switch_ != nullptr)
+    phase_correction_bypass_switch_->publish_state(phase_correction_bypass_);
+  registry_.reset_volatile_settings();
+  this->publish_active_settings_();
+}
+
+void GenSAMHub::publish_active_settings_() {
+  int common = -2;
+  bool modified = false, unknown = false, any = false;
+  for (const auto &entry : registry_.monitors()) {
+    const auto &mon = entry.second;
+    if (!mon.online) { unknown = true; continue; }
+    any = true;
+    const auto found = speaker_settings_.find(mon.unique_id);
+    const int group = found != speaker_settings_.end() ? found->second.group : -1;
+    if (common == -2) common = group;
+    else if (common != group) common = -3;
+    if (found == speaker_settings_.end() || (!found->second.note_known && !found->second.applied))
+      unknown = true;
+    if (found != speaker_settings_.end()) {
+      modified |= found->second.modified;
+    }
+  }
+  const auto *candidate = common >= 0 ? this->get_group(static_cast<uint8_t>(common)) : nullptr;
+  if (candidate != nullptr) {
+    for (uint8_t i = 0; i < candidate->device_count; i++) {
+      const auto *mon = registry_.find_by_serial_or_id(std::to_string(candidate->devices[i].unique_id));
+      if (mon == nullptr || !mon->online) unknown = true;
+    }
+  }
+  active_group_ = any && !unknown && common >= 0 ? common : -1;
+  std::string value = !any || unknown ? "Unknown" :
+                      common == -3 ? "Mixed speaker settings" : "External / unknown";
+  if (external_settings_observed_) value = "External settings (observed)";
+  else if (active_group_ >= 0) {
+    const auto *group = this->get_group(static_cast<uint8_t>(active_group_));
+    value = group->name;
+    if (modified) value += " (modified)";
+  }
+  if (value != active_settings_) {
+    active_settings_ = value;
+    for (auto &callback : settings_callbacks_) callback(value);
+  }
+  if (group_select_ != nullptr) {
+    const auto *group = active_group_ >= 0 ? this->get_group(static_cast<uint8_t>(active_group_)) : nullptr;
+    const std::string selection = group != nullptr ? group->name : SPEAKER_SETTINGS_OPTION;
+    if (group_select_->has_option(selection)) group_select_->publish_state(selection);
   }
 }
 
@@ -376,7 +381,7 @@ bool GenSAMHub::defer_user_command_(std::function<void()> command) {
 }
 
 void GenSAMHub::service_user_commands_(uint32_t now) {
-  if (!can_transmit()) {
+  if (!can_transmit() || speaker_transaction_.active) {
     return;
   }
   if (power_off_pending_ && !apply_.active) {
@@ -552,6 +557,7 @@ bool GenSAMHub::send_frame(const Frame &frame) {
   arbiter_.note_tx(millis());
   uart9_.write(wire_chars.data(), wire_chars.size());
   parser_.clear();
+  this->record_setting_frame_(frame, false);
   return true;
 }
 
@@ -641,8 +647,11 @@ void GenSAMHub::process_rx_() {
     }
 
     // Bus arbitration: attribute the frame, and yield the bus to any external GLM master
-    BusArbiter::Verdict verdict = arbiter_.classify(frame, now);
+    const bool settings_reply_pending = speaker_transaction_.active && speaker_transaction_.awaiting &&
+        now - speaker_transaction_.sent_ms <= SPEAKER_SETTINGS_REPLY_TIMEOUT_MS;
+    BusArbiter::Verdict verdict = arbiter_.classify(frame, now, settings_reply_pending);
     if (verdict == BusArbiter::Verdict::EXTERNAL_MASTER) {
+      this->record_setting_frame_(frame, true);
       if (arbiter_.note_external_activity(now)) {
         ESP_LOGW(TAG, "External GLM master/adapter detected on bus (%s). Yielding bus control (listen-only mode)...",
                  frame.to_string().c_str());
@@ -653,8 +662,14 @@ void GenSAMHub::process_rx_() {
           power_off_pending_ = false;
           resuming_ = false;
           recovery_required_ = true;
+          if (speaker_transaction_.active || store_requested_) {
+            speaker_transaction_.store |= store_requested_;
+            this->fail_speaker_settings_("External controller took the bus");
+          }
           apply_ = GroupApplyState{};
-          pending_group_ = selected_group_;
+          pending_group_ = -1;
+          store_requested_ = false;
+          note_update_requested_ = false;
           current_query_addr_ = 0;
           iss_query_op_ = 0;
           sleep_probe_phase_ = 0;
@@ -687,7 +702,7 @@ void GenSAMHub::check_glm_cooldown_() {
 
   ESP_LOGI(TAG, "No GLM master/adapter traffic observed for %u seconds. Resuming active bus control.",
            (unsigned)(glm_inactivity_cooldown_ms_ / 1000));
-  // Rediscover and reapply the selected group, unless the user powered the system off.
+  // Read the speakers' current settings without reapplying a preset.
   if (!listen_only_ && !bus_silent_) {
     this->discover_monitors_();
   }
@@ -701,7 +716,7 @@ void GenSAMHub::mark_monitor_seen_(GenSAMMonitor &mon) {
 }
 
 void GenSAMHub::check_monitor_timeouts_() {
-  if (bus_silent_ || resuming_ || race_state_ == RaceState::SLEEPING) {
+  if (bus_silent_ || resuming_ || speaker_transaction_.active || race_state_ == RaceState::SLEEPING) {
     return;
   }
   uint32_t now = millis();
@@ -859,7 +874,6 @@ void GenSAMHub::set_iss_sleep_delay(uint32_t minutes) {
     return;
   }
   iss_sleep_delay_ = minutes;
-  this->save_iss_state_();
   // "Speaker default" sends nothing, but a pending threshold must still go out.
   iss_tx_pending_ = iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT ||
                     iss_threshold_ != ISS_THRESHOLD_DEFAULT;
@@ -873,7 +887,6 @@ void GenSAMHub::set_iss_threshold(int32_t dbu) {
     return;
   }
   iss_threshold_ = dbu;
-  this->save_iss_state_();
   iss_tx_pending_ = iss_sleep_delay_ != ISS_SLEEP_DELAY_DEFAULT ||
                     iss_threshold_ != ISS_THRESHOLD_DEFAULT;
   ESP_LOGD(TAG, "ISS sensitivity request accepted: %d dBu", (int) dbu);
@@ -909,7 +922,7 @@ void GenSAMHub::queue_runtime_settings_() {
 }
 
 void GenSAMHub::service_pending_writes_(uint32_t now) {
-  if (resuming_ || !initial_discovery_done_ || power_off_pending_) return;
+  if (resuming_ || !initial_discovery_done_ || power_off_pending_ || speaker_transaction_.active) return;
   if (!volume_tx_pending_ && !mute_tx_pending_ && !system_led_tx_pending_ && !iss_tx_pending_ &&
       !filter_bypass_tx_pending_) {
     return;
@@ -994,6 +1007,12 @@ void GenSAMHub::transmit_system_leds_() {
       transmitted = false;
       continue;
     }
+    if (!kv.second.system_leds_known || kv.second.system_leds_enabled != enabled) {
+      speaker_settings_[kv.second.unique_id].modified = true;
+      speaker_settings_[kv.second.unique_id].dirty = true;
+      note_update_requested_ = true;
+      this->set_store_status_("Unsaved changes");
+    }
     kv.second.system_leds_enabled = enabled;
     kv.second.system_leds_known = true;
   }
@@ -1001,6 +1020,7 @@ void GenSAMHub::transmit_system_leds_() {
   if (transmitted) {
     system_led_tx_pending_ = false;
     this->commit_system_led_state_(enabled);
+    this->publish_active_settings_();
     ESP_LOGI(TAG, "Set live monitor LEDs %s across %zu monitors", YESNO(enabled), registry_.size());
   } else {
     ESP_LOGW(TAG, "Monitor LED setting was only partially transmitted; it will be retried");
@@ -1185,7 +1205,7 @@ void GenSAMHub::set_monitor_crossover_by_name(const std::string &serial_or_id, c
 // monitor 0x02 takes a delay and a level at 18:31:56.899 with its nearest 0x17 ninety seconds
 // away - so a bare frame lands. The flag 17 01 sets (stored settings over DIP switches) is
 // still in force from the last group push or GLM session, and lapses only with a restart,
-// which is followed by a group push anyway.
+// where the speaker's stored profile becomes the source of truth.
 
 void GenSAMHub::set_monitor_level(uint8_t address, float db) {
   if (!executing_user_command_) {
@@ -1393,8 +1413,7 @@ void GenSAMHub::set_monitor_input(uint8_t address, uint8_t source, uint8_t chann
     registry_.set_input(*mon, source, channel);
   }
 
-  // The group is deliberately left alone, so the next push - a group switch, a standby cycle,
-  // or a rediscovery - puts its own routing back.
+  // A later explicit group push replaces this volatile routing choice.
   const char *name = input_to_str(source, channel);
   if (!can_transmit()) {
     ESP_LOGW(TAG, "Monitor 0x%02X input set to %s (stored; bus not ready for TX)", address, name);
@@ -1450,7 +1469,7 @@ void GenSAMHub::set_standby(bool standby) {
       user_commands_.clear();
       pending_group_ = -1;
       volume_tx_pending_ = mute_tx_pending_ = system_led_tx_pending_ = false;
-      iss_tx_pending_ = filter_bypass_tx_pending_ = false;  // Re-queued after the next wake
+      iss_tx_pending_ = filter_bypass_tx_pending_ = false;
       power_off_pending_ = true;
       bus_silent_ = false;
     }
@@ -1525,7 +1544,7 @@ void GenSAMHub::identify_monitor_by_address(uint8_t address, uint32_t duration_m
 }
 
 void GenSAMHub::check_identify_timeouts_() {
-  if (!can_transmit() || resuming_ || current_query_addr_ != 0 || apply_.active ||
+  if (!can_transmit() || resuming_ || current_query_addr_ != 0 || apply_.active || speaker_transaction_.active ||
       (race_state_ != RaceState::POLLING_MONITORS && race_state_ != RaceState::IDLE)) {
     return;
   }
@@ -1578,7 +1597,13 @@ void GenSAMHub::loop() {
   // After RX, so a reply that has just landed has cleared current_query_addr_; before the state
   // machine, so the frame is on the wire before it picks its next step.
   this->service_pending_writes_(millis());
+  this->service_speaker_settings_(millis());
   this->update_race_state_machine_();
+  if (apply_.active) {
+    group_apply_loop_.start();
+  } else {
+    group_apply_loop_.stop();
+  }
   this->check_monitor_timeouts_();
   this->check_identify_timeouts_();
   this->log_stats_();

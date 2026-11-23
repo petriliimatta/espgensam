@@ -24,6 +24,18 @@ static const char *const TAG = "gensam";
 namespace esphome {
 namespace gensam {
 
+void MonitorRegistry::reset_volatile_settings() {
+  for (auto &binding : bindings_) {
+    binding.input_configured = binding.crossover_configured = false;
+    binding.level_configured = binding.delay_configured = false;
+    this->set_binding_calibration_bypass(binding, false);
+    if (binding.input_select != nullptr) binding.input_select->set_has_state(false);
+    if (binding.crossover_select != nullptr) binding.crossover_select->set_has_state(false);
+    if (binding.level_number != nullptr) binding.level_number->set_has_state(false);
+    if (binding.delay_number != nullptr) binding.delay_number->set_has_state(false);
+  }
+}
+
 namespace {
 
 /// Case-insensitive match of a user-supplied identifier against a binding's serial, ID, or name.

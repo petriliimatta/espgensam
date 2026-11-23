@@ -30,14 +30,17 @@
 ///    - Addressed to the host (a monitor's reply): ours only if we transmitted within the
 ///      reply window, which is longer because it must cover the monitor's turnaround and
 ///      response time.  A host-addressed frame before GenSAM has ever transmitted is
-///      necessarily a reply to somebody else.
+///      necessarily a reply to somebody else, unless the caller explicitly bounds an outstanding
+///      slow settings/store reply.
 ///
 /// 3. Timing Windows:
 ///    The echo window (50 ms) bounds how long our own outbound frame can still be draining
 ///    back through the receiver.  The reply window (300 ms) bounds how long a monitor may
 ///    take to answer a query of ours.  Both are generous relative to the 288,000 baud wire
 ///    rate; they trade a slightly slower external-master detection for never mistaking our
-///    own conversation for an intruder and needlessly abandoning the bus.
+///    own conversation for an intruder and needlessly abandoning the bus. A serialized speaker
+///    settings transaction extends reply attribution only while its 500 ms deadline is active;
+///    this does not extend the echo window or suppress outbound external-master detection.
 /// ===================================================================================
 
 #include <cstdint>
@@ -65,8 +68,9 @@ class BusArbiter {
   /// @brief Attribute an incoming frame to its likely origin. See rationale §2.
   /// @param frame The decoded frame received from the bus.
   /// @param now Current millis() timestamp.
+  /// @param awaiting_reply A caller-bounded outstanding request permits a slower host reply.
   /// @return The origin verdict; does not mutate arbitration state.
-  Verdict classify(const Frame &frame, uint32_t now) const;
+  Verdict classify(const Frame &frame, uint32_t now, bool awaiting_reply = false) const;
 
   /// @brief Record observed external master activity, yielding the bus if not already yielded.
   /// @param now Current millis() timestamp.
@@ -84,6 +88,10 @@ class BusArbiter {
 
   /// @brief Timestamp (millis) of the most recently observed external master frame.
   uint32_t last_activity() const { return last_activity_; }
+
+  /// @brief Timestamp (millis) of the controller's most recent transmitted frame.
+  /// @return The last note_tx() timestamp, or zero before any controller transmission.
+  uint32_t last_transmit() const { return last_our_tx_; }
 
  protected:
   /// Maximum age of our own transmission for an inbound non-host frame to be our echo.

@@ -269,7 +269,7 @@ th,td{padding:.35rem .5rem;border-bottom:1px solid #4b5563;white-space:nowrap}
 <input id="file" type="file" accept=".sam,text/plain"><button id="upload">Validate</button>
 <div id="feedback" hidden><p id="message" role="status"></p><ul id="warnings"></ul></div></section>
 <section id="details" hidden><h2>New setup details</h2><p>Preview of the newly validated file, not the current speaker settings.</p><div id="summary"></div></section>
-<section><h2>2. Save and restart</h2><p>A new upload starts with its first group. Later group selections are remembered.</p>
+<section><h2>2. Save catalog and restart</h2><p>This saves the preset library on the ESP, not settings to speakers. Restart uses speaker-stored settings; selecting a group is volatile until Store Settings to Speakers is pressed.</p>
 <button id="apply" disabled>Save and restart</button></section>
 <script src="/group-view.js"></script>
 <script>
@@ -557,12 +557,10 @@ bool SamUploadComponent::restore_stored_() {
     auto parsed = std::make_unique<SamPresets>();
     bool usable = parse_sam_runtime(text, *parsed, warnings, error) &&
                   !parsed->groups().empty() && parsed->groups().size() <= UINT8_MAX;
-    int default_index = slot_default(selected);
-    if (default_index >= 0 && static_cast<size_t>(default_index) >= parsed->groups().size()) usable = false;
-    if (default_index < 0) default_index = 0;
+    const int previous_default = slot_default(selected);
     for (const auto &group : parsed->owned) {
       if (group.devices.empty()) usable = false;
-      if (std::any_of(group.name.begin(), group.name.end(),
+      if (group.name == SPEAKER_SETTINGS_OPTION || std::any_of(group.name.begin(), group.name.end(),
                       [](unsigned char ch) { return ch < 0x20 || ch == 0x7F; })) usable = false;
     }
     if (!usable) {
@@ -578,15 +576,12 @@ bool SamUploadComponent::restore_stored_() {
     runtime_presets_ = std::move(parsed);
     this->publish_monitor_names_();
     this->initialize_group_select_();
-    hub_->set_default_group(static_cast<uint8_t>(default_index));
-    hub_->set_group_generation(selected.sequence);
     table_revision_++;
     active_slot_ = chosen;
     if (attempt != 0) warnings.push_back("Newest stored setup was rejected; restored the previous valid setup.");
-    if ((selected.version & 0xFF) == SLOT_VERSION_DEFAULT &&
-        ((selected.version >> 8) & 0xFF) != 0) {
-      warnings.push_back("Previous default could not be restored because uploaded groups are no longer filtered; the first group is now the startup default.");
-    }
+    if (previous_default >= 0 || ((selected.version & 0xFF) == SLOT_VERSION_DEFAULT &&
+                                 ((selected.version >> 8) & 0xFF) != 0))
+      warnings.push_back("Legacy startup-group selection ignored; using speaker settings.");
     this->set_result_("ready", "Stored setup restored. Select groups on the main page or in Home Assistant.", warnings);
     ESP_LOGI(TAG, "Restored %u groups from persistent SAM setup", static_cast<unsigned>(groups.size()));
     for (const auto &warning : warnings) ESP_LOGW(TAG, "Stored SAM setup warning: %s", warning.c_str());
@@ -606,7 +601,8 @@ void SamUploadComponent::initialize_group_select_() {
   if (group_select_ == nullptr || runtime_presets_ == nullptr) return;
   const auto &groups = runtime_presets_->groups();
   FixedVector<const char *> options;
-  options.init(groups.size());
+  options.init(groups.size() + 1);
+  options.push_back(SPEAKER_SETTINGS_OPTION);
   for (const auto &group : groups) options.push_back(group.name);
   group_select_->traits.set_options(options);
   group_select_->set_has_state(false);
@@ -683,11 +679,11 @@ void SamUploadComponent::process_upload_(std::string text) {
     bool safe_names = true;
     for (const auto &group : parsed->owned) {
       if (group.devices.empty()) has_device = false;
-      if (std::any_of(group.name.begin(), group.name.end(),
+      if (group.name == SPEAKER_SETTINGS_OPTION || std::any_of(group.name.begin(), group.name.end(),
                       [](unsigned char ch) { return ch < 0x20 || ch == 0x7F; })) safe_names = false;
     }
     if (!safe_names) {
-      this->set_result_("error", "Setup rejected: group names must not contain control characters.", warnings);
+      this->set_result_("error", "Setup rejected: group names must not contain control characters or use the reserved name Speaker settings.", warnings);
     } else if (!has_device) {
       this->set_result_("error", "Setup rejected: at least one group contains no usable monitors.", warnings);
     } else {
@@ -698,7 +694,7 @@ void SamUploadComponent::process_upload_(std::string text) {
         std::lock_guard<std::mutex> lock(mutex_);
         table_pending_ = true;
       }
-      this->set_result_("staged", "Setup validated. Save and restart to select its first group.", warnings);
+      this->set_result_("staged", "Setup validated. Save the catalog and restart; speaker settings are not changed.", warnings);
       ESP_LOGI(TAG, "Validated SAM setup (%u bytes, %u groups)",
                static_cast<unsigned>(staged_upload_.size()),
                static_cast<unsigned>(pending_presets_->groups().size()));

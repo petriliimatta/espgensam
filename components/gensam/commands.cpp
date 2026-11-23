@@ -66,6 +66,21 @@ Frame make_store_user_params(uint8_t addr) {
   return Frame(addr, CMD_SERVICE, {SERVICE_STORE_USER_PARS, SERVICE_PROFILE_DEFAULT});
 }
 
+Frame make_restore_user_params(uint8_t addr) {
+  return Frame(addr, CMD_SERVICE, {SERVICE_RESTORE_USER_PARS, SERVICE_PROFILE_DEFAULT});
+}
+
+Frame make_user_note_read(uint8_t addr) {
+  return Frame(addr, CMD_NAMES_USER, {0x81});
+}
+
+Frame make_user_note_write(uint8_t addr, const std::string &note) {
+  std::vector<uint8_t> payload{0x01};
+  payload.insert(payload.end(), note.begin(), note.end());
+  if (note.empty()) payload.push_back(0x00);
+  return Frame(addr, CMD_NAMES_USER, std::move(payload));
+}
+
 Frame make_filter_bypass(uint8_t addr, uint8_t mask) {
   return Frame(addr, CMD_BYPASS_FILTERS, {0x00, mask});
 }

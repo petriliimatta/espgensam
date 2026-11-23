@@ -5,11 +5,10 @@
 ///
 /// The web handler only stages bounded request bytes and enqueues user intent. Parsing, flash
 /// writes, and every hub mutation happen from this component's main-loop callbacks. A validated
-/// setup remains staged until saved; its first group is the initial selection committed to
-/// a CRC-checked flash slot. After restart the restored names back the ESPHome select for the
-/// lifetime of the boot, before web and API clients can observe them. Legacy slots without a
-/// usable default select the first group, since older filtered group indices may have changed.
-/// The hub remembers subsequent selections separately, scoped to this upload's generation.
+/// setup remains staged until its catalog is saved to a CRC-checked ESP flash slot. After
+/// restart the restored names back the ESPHome select for the lifetime of the boot, alongside
+/// "Speaker settings". Catalog restoration never selects/pushes a preset; legacy startup-group
+/// indices are ignored. Speaker profiles are saved only by the separate explicit store action.
 /// The status snapshot includes each imported PEQ slot; a null band denotes an unused bypass
 /// slot. Its JSON is rebuilt only when the status or preset table changes to avoid repeatedly
 /// allocating the potentially large summary in the hub's loop.

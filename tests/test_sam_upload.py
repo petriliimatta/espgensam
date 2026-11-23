@@ -99,6 +99,7 @@ int httpd_req_recv(AsyncWebServerRequest &r,char *out,size_t len) {
   len=std::min({len,size_t(4),r.input.size()-r.offset});
   memcpy(out,r.input.data()+r.offset,len); r.offset+=len; return static_cast<int>(len);
 }
+constexpr const char *SPEAKER_SETTINGS_OPTION = "Speaker settings";
 class AsyncWebHandler {
  public:
   virtual ~AsyncWebHandler()=default;
@@ -265,7 +266,7 @@ int main() {
   assert(valid_slot(parent.partitions_[parent.active_slot_], default_header));
   assert(slot_default(default_header) == 0);
   assert(parent.restore_stored_());
-  assert(parent.hub.default_index == 0);
+  assert(parent.hub.default_index == -1);
   SlotHeader old_filtered = default_header;
   old_filtered.version = (old_filtered.version & ~0xFFU) | SLOT_VERSION_DEFAULT;
   old_filtered.data_crc ^= default_header.version ^ old_filtered.version;
@@ -274,7 +275,7 @@ int main() {
   SamUploadComponent migrated;
   migrated.a=parent.a; migrated.b=parent.b;
   assert(migrated.restore_stored_());
-  assert(migrated.hub.default_index==0 && !migrated.result_warnings.empty());
+  assert(migrated.hub.default_index==-1 && !migrated.result_warnings.empty());
   memcpy(const_cast<esp_partition_t *>(parent.partitions_[parent.active_slot_])->bytes.data(),
          &default_header, sizeof(default_header));
   auto &version_byte = const_cast<esp_partition_t *>(parent.partitions_[parent.active_slot_])->bytes[17];
@@ -287,7 +288,7 @@ int main() {
   SamUploadComponent boot;
   boot.a=parent.a; boot.b=parent.b;
   assert(boot.restore_stored_());
-  assert(boot.hub.default_index==0);
+  assert(boot.hub.default_index==-1);
   SlotHeader legacy = default_header;
   legacy.data_crc ^= legacy.version;
   legacy.version = SLOT_VERSION;
@@ -441,6 +442,7 @@ assert.match(message.textContent,/offline/,'Apply catches fetch failure');
 namespace select {
 class Select { protected: virtual void control(const std::string &) = 0; };
 }
+constexpr const char *SPEAKER_SETTINGS_OPTION = "Speaker settings";
 class GenSAMHub {
  public:
   bool listen_only=false;
@@ -455,6 +457,8 @@ class TestSelect : public GenSAMGroupSelect {
 };
 int main() {
   GenSAMHub hub; TestSelect select; select.set_hub(&hub);
+  select.control("Speaker settings"); assert(hub.selected=="Speaker settings");
+  hub.selected.clear();
   select.control("A"); assert(hub.selected.empty());
   select.set_runtime_ready(); hub.listen_only=true;
   select.control("A"); assert(hub.selected.empty());

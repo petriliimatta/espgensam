@@ -23,7 +23,7 @@ names (guide §6.4), and `const.h` now uses them:
 
 | Opcode | Old name | New name | What changed |
 |---|---|---|---|
-| `0x15` | `CMD_FLASH_COMMIT` | `CMD_SERVICE` | `0x15` is a service prefix. `15 33 n` stores the working settings into profile *n*, and `15 34 n` restores from it (guide §11.5). The builder is now `make_store_user_params()`. It is still never sent. |
+| `0x15` | `CMD_FLASH_COMMIT` | `CMD_SERVICE` | `0x15` is a service prefix. `15 33 n` stores the working settings into profile *n*, and `15 34 n` restores from it (guide §11.5). The builder is `make_store_user_params()`. A temporary diagnostic validated profile 0 storage on one 8351B; the production component still does not send it (see §3). |
 | `0x17` | `CMD_PREPARE_CONFIG` | `CMD_NET_SETTINGS` | `17 01` tells the speaker to use its stored settings and ignore the DIP switches; `17 00` resumes the switches (guide §6.6). The builder is now `make_use_stored_settings()`. The frame sent is unchanged. |
 | `0x22` | `CMD_HARDWARE_QUERY` | `CMD_SOFTWARE_QUERY_SHORT` | The reply is the short system-info string (model, class, firmware, build), not a hardware ID. |
 | `0x2D` | `CMD_SESSION_PREAMBLE` | `CMD_SWITCH_BYPASS` | It is accepted without effect and without a reply on the firmware the guide examined. |
@@ -123,19 +123,40 @@ The guide's ISS encodings (guide §11.2) match this project's own store capture
 
 The guide also gives the missing disabled ("Never") encoding and the remaining menu values.
 
-**Implemented as runtime-only.** The hub exposes two selects, **ISS Sleep Delay** and **ISS
+**Implemented as volatile edits with explicit storage.** The hub exposes two selects, **ISS Sleep Delay** and **ISS
 Sensitivity**. Each offers GLM's menu plus *Speaker default*. The values are broadcast, as GLM
-sends them, but never followed by the `15 33 00` store that GLM sends. A store would write the
+sends them, but only the explicit **Store Settings to Speakers** action sends `15 33 00`. A store writes the
 speaker's entire working state into its start-up profile, including whatever calibration a
 group push left there.
 
+**Store validation (2026-11-23).** On an 8351B running firmware 1.24.07.6470, a temporary
+diagnostic set all 20 PEQ bands to −20 dB and the stored LED state to Off. With the ESP held
+listen-only, the speaker reverted to normal sound and LED On after a power cycle when the
+changes had not been stored. After sending `15 33 00`, both the extreme PEQ and LED Off
+survived the same test. The speaker was then restored to its `Sohva` group settings, LED On
+was stored, and normal sound and LED On survived another power cycle. This confirms storage
+of these working PEQ and LED values in profile 0 on this unit; it does not validate every
+setting, other profiles or models, or persistence of PEQ/LED through the controller's normal
+rediscovery.
+
+The same diagnostic tested user notes: `51 80` returned `8351B`, while `51 81` initially
+returned an empty payload. Writing `51 01` with ASCII `ESPTEST1` made `51 81` return those
+exact bytes. After `15 33 00` and a speaker power cycle, including controller rediscovery and
+group reapplication, `51 81` still returned `ESPTEST1`. Writing `51 01 00`, storing again,
+and reading back returned an empty payload. This confirms a short note can be read, written,
+and stored with profile 0 on this unit; the maximum note length and encoding limits remain
+unknown. Production verifies its complete 21-byte fingerprint note before permitting a store.
+That longer note has not yet been hardware-validated; truncation/mismatch blocks the commit.
+
 The consequence follows from how the speakers behave. A speaker loses its runtime settings
 when it wakes from ISS sleep or standby (guide §8.1 describes this as a restart; the README
-already notes the lost settings). So the hub re-sends an override after every
-discovery and group push, which it performs at every wake. An override therefore governs the
-next sleep after each wake. The override is remembered on the controller across reboots.
+already notes the lost settings). The hub now discards applied overrides at rediscovery and
+does not reapply a preset on wake. Only master volume is remembered by the controller.
 Choosing *Speaker default* stops sending, and the speaker returns to its stored value at its
-next restart.
+next restart/profile reload. Profile-0 restore (`15 34 00`) and stored LED readback (`3A 86`)
+are documented/protocol-derived additions, not yet hardware-verified. User-note tags identify
+known catalog settings, not complete independent DSP readback; unobserved external uploads
+retaining old notes can leave stale identity.
 
 Two more points affect sleep timing:
 
@@ -184,7 +205,7 @@ The masks do not combine.
 
 **Implemented for mask `01` only**, as a hub-wide **Bypass Phase Correction** switch. It is
 disabled by default and not persisted, like Bypass Calibration. It is sent unicast to each
-monitor, re-sent after discovery and group pushes while on, and cleared with mask `00`. Mask
+monitor, cleared with mask `00`, and reset at rediscovery. Store is blocked while bypassed. Mask
 `02` is not offered: it would silently undo the room calibration and the factory driver EQ
 together, and Bypass Calibration already covers the comparison users want.
 
